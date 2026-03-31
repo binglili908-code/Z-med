@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/pubmed-sync",
+      "schedule": "0 22 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-push",
+      "schedule": "0 1 * * 1"
+    },
+    {
+      "path": "/api/cron/pubmed-backfill",
+      "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/ai-analysis",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}
