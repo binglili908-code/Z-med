@@ -1,8 +1,53 @@
+"use client";
+
+import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { createClient } from "@supabase/supabase-js";
 
 import { Brain, Search, Stethoscope } from "lucide-react";
 
 export function Navbar() {
+  const router = useRouter();
+  const [loading, setLoading] = React.useState(true);
+  const [email, setEmail] = React.useState<string | null>(null);
+
+  const supabase = React.useMemo(() => {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anon) return null;
+    return createClient(url, anon);
+  }, []);
+
+  React.useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setEmail(data.session?.user?.email ?? null);
+      setLoading(false);
+    });
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      setEmail(session?.user?.email ?? null);
+      setLoading(false);
+    });
+    return () => {
+      mounted = false;
+      subscription.subscription.unsubscribe();
+    };
+  }, [supabase]);
+
+  const signOut = React.useCallback(async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setEmail(null);
+    router.push("/signin");
+    router.refresh();
+  }, [router, supabase]);
+
   return (
     <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200">
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -39,9 +84,25 @@ export function Navbar() {
         </div>
 
         <div className="flex items-center gap-4">
-          <Link href="/signin" className="text-sm font-medium text-slate-600 hover:text-slate-900">
-            Sign in
-          </Link>
+          {!loading && email ? (
+            <>
+              <span className="hidden md:inline text-xs text-slate-500">{email}</span>
+              <Link href="/settings" className="text-sm font-medium text-slate-600 hover:text-slate-900">
+                Settings
+              </Link>
+              <button
+                type="button"
+                onClick={signOut}
+                className="text-sm font-medium text-slate-600 hover:text-slate-900"
+              >
+                登出
+              </button>
+            </>
+          ) : (
+            <Link href="/signin" className="text-sm font-medium text-slate-600 hover:text-slate-900">
+              Sign in
+            </Link>
+          )}
           <Link
             href="/submit"
             className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors"

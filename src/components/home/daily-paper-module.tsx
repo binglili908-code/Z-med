@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import Link from "next/link";
 import { Brain, Clock, Dna, Sparkles, Stethoscope } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -385,6 +386,14 @@ export function DailyPaperModule() {
           ))}
         </div>
       ) : null}
+      {requiresLogin ? (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          研究方向订阅和邮件发送功能需登录后使用。{" "}
+          <Link href="/signin" className="font-semibold text-slate-900 underline">
+            请先登录
+          </Link>
+        </div>
+      ) : null}
 
       <div className="mb-6 z-10">
         <div className="flex items-center gap-3 mb-3">
@@ -441,7 +450,9 @@ export function DailyPaperModule() {
           {buttonLabel(paper.id, paper.pdfEmailedAt)}
         </button>
         {requiresLogin ? (
-          <p className="mt-2 text-xs text-slate-500">登录后可按你的订阅词个性化推送并发送全文。</p>
+          <p className="mt-2 text-xs text-slate-500">
+            登录后可按你的订阅词个性化推送并发送全文。请先登录。
+          </p>
         ) : null}
         {!requiresLogin && devBypassAuth ? (
           <p className="mt-2 text-xs text-amber-600">当前为开发免登录模式，仅用于本地测试。</p>
