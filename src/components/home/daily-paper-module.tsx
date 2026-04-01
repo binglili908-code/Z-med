@@ -9,24 +9,32 @@ import { createClient } from "@supabase/supabase-js";
 type FeedPaper = {
   id: string;
   title: string;
-  journal: string | null;
-  publicationDate: string | null;
-  qualityScore: number | null;
-  qualityTier: string | null;
-  pubmedUrl: string;
-  isOpenAccess: boolean;
-  oaPdfUrl: string | null;
-  aiAnalysis: Record<string, unknown> | null;
-  tags: string[];
-  topics: Array<{ slug: string; nameZh: string | null; nameEn: string | null }>;
-  pdfEmailedAt: string | null;
+  journal: string;
+  publication_date: string | null;
+  quality_score: number;
+  quality_tier: "top" | "core" | "emerging";
+  pubmed_url: string;
+  is_open_access: boolean;
+  oa_pdf_url: string | null;
+  ai_analysis: {
+    summary_zh: string;
+    background: string;
+    method: string;
+    value: string;
+  } | null;
+  topics: Array<{ name_zh: string; confidence: number }>;
+  source_type: "precision" | "trending" | "serendipity";
+  recommendation_reason: string | null;
+  pdf_emailed_at: string | null;
 };
 
 type FeedResponse = {
-  featured: FeedPaper | null;
-  items: FeedPaper[];
-  total?: number;
+  papers: FeedPaper[];
+  total: number;
+  page: number;
+  pageSize: number;
   personalized: boolean;
+  hasSubscription?: boolean;
   requiresLogin: boolean;
   devBypassAuth?: boolean;
   devBypassUserId?: string | null;
@@ -90,6 +98,8 @@ type DailyPaperView = {
     method: string;
     value: string;
   };
+  sourceType: "precision" | "trending" | "serendipity";
+  recommendationReason: string | null;
 };
 
 function parseDate(date: string | null) {
@@ -119,23 +129,29 @@ function fromAiAnalysis(ai: Record<string, unknown> | null, fallbackDate: string
 
 function toDailyPaperView(p: FeedPaper): DailyPaperView {
   const journal = p.journal ?? "PubMed";
-  const date = parseDate(p.publicationDate);
-  const ai = fromAiAnalysis(p.aiAnalysis, date);
+  const date = parseDate(p.publication_date);
+  const ai = fromAiAnalysis(p.ai_analysis, date);
 
   return {
     id: p.id,
     title: p.title,
     journal,
     date,
-    qualityScore: p.qualityScore ?? null,
-    qualityTier: p.qualityTier ?? null,
-    pubmedUrl: p.pubmedUrl,
-    isOpenAccess: p.isOpenAccess,
-    oaPdfUrl: p.oaPdfUrl,
-    pdfEmailedAt: p.pdfEmailedAt,
-    tagsRaw: p.tags ?? [],
-    topics: p.topics ?? [],
+    qualityScore: p.quality_score ?? null,
+    qualityTier: p.quality_tier ?? null,
+    pubmedUrl: p.pubmed_url,
+    isOpenAccess: p.is_open_access,
+    oaPdfUrl: p.oa_pdf_url,
+    pdfEmailedAt: p.pdf_emailed_at,
+    tagsRaw: [],
+    topics: (p.topics ?? []).map((t, idx) => ({
+      slug: `${p.id}-${idx}`,
+      nameZh: t.name_zh,
+      nameEn: null,
+    })),
     aiDigest: ai,
+    sourceType: p.source_type,
+    recommendationReason: p.recommendation_reason,
   };
 }
 
@@ -158,12 +174,15 @@ const fallbackPaper: DailyPaperView = {
     method: "待生成（核心方法与创新点）",
     value: "待生成（临床与科研价值）",
   },
+  sourceType: "precision",
+  recommendationReason: null,
 };
 
 export function DailyPaperModule() {
   const [paper, setPaper] = React.useState<DailyPaperView>(fallbackPaper);
   const [items, setItems] = React.useState<DailyPaperView[]>([]);
   const [requiresLogin, setRequiresLogin] = React.useState(false);
+  const [hasSubscription, setHasSubscription] = React.useState(false);
   const [devBypassAuth, setDevBypassAuth] = React.useState(false);
   const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(null);
   const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(null);
@@ -194,6 +213,8 @@ export function DailyPaperModule() {
       const token = await getAccessToken();
       const params = new URLSearchParams();
       if (selectedTopic !== "all") params.set("topic", selectedTopic);
+      params.set("page", "1");
+      params.set("pageSize", "60");
       const res = await fetch(`/api/papers/feed${params.toString() ? `?${params.toString()}` : ""}`, {
         cache: "no-store",
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -201,13 +222,15 @@ export function DailyPaperModule() {
       if (!res.ok) return;
       const json = (await res.json()) as FeedResponse;
       setRequiresLogin(Boolean(json.requiresLogin));
+      setHasSubscription(Boolean(json.hasSubscription));
       setDevBypassAuth(Boolean(json.devBypassAuth));
       setDevBypassUserId(json.devBypassUserId ?? null);
       setDevBypassSeedEmail(json.devBypassSeedEmail ?? null);
-      if (json?.featured?.title && json?.featured?.pubmedUrl) {
-        setPaper(toDailyPaperView(json.featured));
+      const rows = (json.papers ?? []).map(toDailyPaperView);
+      if (rows.length) {
+        setPaper(rows[0]);
       }
-      setItems((json.items ?? []).map(toDailyPaperView));
+      setItems(rows.slice(1));
       setListPage(1);
     } catch {
       return;
@@ -336,6 +359,12 @@ export function DailyPaperModule() {
     }
   }, [loadFeed]);
 
+  const sourceTypeLabel = React.useCallback((sourceType: DailyPaperView["sourceType"]) => {
+    if (sourceType === "trending") return "🔥 全局热点";
+    if (sourceType === "serendipity") return "💡 跨界推荐";
+    return null;
+  }, []);
+
   return (
     <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm hover:shadow-md transition-shadow flex flex-col h-full relative overflow-hidden">
       <div className="absolute top-0 right-0 w-64 h-64 bg-teal-50 rounded-full blur-3xl -mr-20 -mt-20 opacity-50 pointer-events-none"></div>
@@ -408,6 +437,11 @@ export function DailyPaperModule() {
               Top Tier
             </span>
           ) : null}
+          {sourceTypeLabel(paper.sourceType) ? (
+            <span className="text-xs font-medium text-blue-700 border border-blue-300 bg-blue-50 px-2.5 py-1 rounded-md">
+              {sourceTypeLabel(paper.sourceType)}
+            </span>
+          ) : null}
           <span className="ml-auto text-xs font-medium text-slate-400 flex items-center gap-1">
             <Clock className="w-3 h-3" /> {paper.date}
           </span>
@@ -420,6 +454,9 @@ export function DailyPaperModule() {
         >
           {paper.title}
         </a>
+        {paper.recommendationReason ? (
+          <p className="mb-2 text-xs text-slate-500">{paper.recommendationReason}</p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           {paper.tagsRaw.slice(0, 3).map((t) => (
             <span
@@ -456,6 +493,14 @@ export function DailyPaperModule() {
         ) : null}
         {!requiresLogin && devBypassAuth ? (
           <p className="mt-2 text-xs text-amber-600">当前为开发免登录模式，仅用于本地测试。</p>
+        ) : null}
+        {!requiresLogin && !hasSubscription ? (
+          <p className="mt-2 text-xs text-slate-500">
+            你当前还未配置订阅，正在展示全局高分文献。{" "}
+            <Link href="/settings" className="font-semibold text-slate-900 underline">
+              去设置页配置订阅
+            </Link>
+          </p>
         ) : null}
         {lastSendMessage ? (
           <p className="mt-2 text-xs text-slate-600">{lastSendMessage}</p>
@@ -530,6 +575,8 @@ export function DailyPaperModule() {
                 <div className="text-xs text-slate-500">
                   {it.journal} · {it.date}
                   {(it.qualityTier ?? "").toLowerCase() === "top" ? " · Top Tier" : ""}
+                  {sourceTypeLabel(it.sourceType) ? ` · ${sourceTypeLabel(it.sourceType)}` : ""}
+                  {it.recommendationReason ? ` · ${it.recommendationReason}` : ""}
                 </div>
                 <button
                   type="button"

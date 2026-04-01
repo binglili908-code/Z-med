@@ -453,8 +453,6 @@ async function scoreAndUpsertPapers(args: {
     throw new Error(`Failed to load paper ids: ${paperRowsErr.message}`);
   }
 
-  // Deprecated: paper_topics is no longer written. Use paper_research_topics only.
-
   const relationRows: Array<{
     paper_id: string;
     topic_id: string;
