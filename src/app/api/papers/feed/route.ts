@@ -15,6 +15,7 @@ export const dynamic = "force-dynamic";
 type DbPaper = {
   id: string;
   title: string;
+  abstract: string | null;
   journal: string | null;
   publication_date: string | null;
   ai_med_score: number | null;
@@ -38,6 +39,7 @@ type TopicRelationRow = {
 type ProfileRow = {
   top_journals_only: boolean | null;
   subscription_min_score: number | string | null;
+  subscription_keywords: string[] | null;
 };
 
 type FeedRecommendationRow = {
@@ -60,6 +62,27 @@ function clamp(n: number, min: number, max: number) {
 function toSafeMinScore(value: ProfileRow["subscription_min_score"] | undefined) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeKeywordList(values: string[] | null | undefined) {
+  const set = new Set<string>();
+  for (const raw of values ?? []) {
+    const v = raw.trim().toLowerCase();
+    if (v) set.add(v);
+  }
+  return Array.from(set);
+}
+
+function matchesAnyKeyword(paper: DbPaper, keywords: string[]) {
+  if (!keywords.length) return true;
+  const text = [
+    paper.title ?? "",
+    paper.abstract ?? "",
+    paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
+  ]
+    .join("\n")
+    .toLowerCase();
+  return keywords.some((kw) => text.includes(kw));
 }
 
 async function resolveBypassUserId(service: ReturnType<typeof createServiceSupabaseClient>) {
@@ -101,15 +124,17 @@ export async function GET(req: Request) {
   let topOnly = false;
   let minScore = 0;
   let subscribedTopicIds: string[] = [];
+  let profileKeywords: string[] = [];
 
   if (userId) {
     const { data: profile } = await service
       .from("profiles")
-      .select("top_journals_only,subscription_min_score")
+      .select("top_journals_only,subscription_min_score,subscription_keywords")
       .eq("id", userId)
       .maybeSingle();
     topOnly = Boolean((profile as ProfileRow | null)?.top_journals_only);
     minScore = toSafeMinScore((profile as ProfileRow | null)?.subscription_min_score);
+    profileKeywords = normalizeKeywordList((profile as ProfileRow | null)?.subscription_keywords);
 
     const { data: subRows } = await service
       .from("user_topic_subscriptions")
@@ -131,8 +156,7 @@ export async function GET(req: Request) {
         .select("paper_id,source_type,recommendation_score,reason", { count: "exact" })
         .eq("user_id", userId)
         .eq("batch_date", today)
-        .order("recommendation_score", { ascending: false })
-        .range(fromIndex, toIndex);
+        .order("recommendation_score", { ascending: false });
 
     let recRes = await loadRecommendations();
     if (recRes.error) {
@@ -173,20 +197,31 @@ export async function GET(req: Request) {
 
   let paperRows: DbPaper[] = [];
   if (recommendationMode) {
-    const paperIds = recommendationRows.map((row) => row.paper_id);
+    const paperIds = Array.from(new Set(recommendationRows.map((row) => row.paper_id)));
     const { data: papers, error: paperErr } = await service
       .from("papers")
       .select(
-        "id,title,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
+        "id,title,abstract,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
       )
       .in("id", paperIds);
     if (paperErr) {
       return NextResponse.json({ error: paperErr.message }, { status: 500 });
     }
-    const indexMap = new Map(paperIds.map((id, index) => [id, index]));
-    paperRows = ((papers ?? []) as DbPaper[]).sort(
-      (a, b) => (indexMap.get(a.id) ?? 0) - (indexMap.get(b.id) ?? 0),
-    );
+    const paperMap = new Map(((papers ?? []) as DbPaper[]).map((paper) => [paper.id, paper]));
+    let orderedRows = recommendationRows
+      .map((row) => paperMap.get(row.paper_id))
+      .filter((row): row is DbPaper => Boolean(row));
+    if (profileKeywords.length) {
+      orderedRows = orderedRows.filter((paper) => matchesAnyKeyword(paper, profileKeywords));
+      const matchedIds = new Set(orderedRows.map((paper) => paper.id));
+      recommendationRows = recommendationRows.filter((row) => matchedIds.has(row.paper_id));
+    }
+    total = recommendationRows.length;
+    recommendationRows = recommendationRows.slice(fromIndex, toIndex + 1);
+    const pagePaperMap = new Map(orderedRows.map((paper) => [paper.id, paper]));
+    paperRows = recommendationRows
+      .map((row) => pagePaperMap.get(row.paper_id))
+      .filter((row): row is DbPaper => Boolean(row));
   } else {
     const candidateTopicIds = hasSubscription ? subscribedTopicIds : [];
     let filterTopicIds = candidateTopicIds;
@@ -232,8 +267,7 @@ export async function GET(req: Request) {
     let query = service
       .from("papers")
       .select(
-        "id,title,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
-        { count: "exact" },
+        "id,title,abstract,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
       )
       .eq("is_ai_med", true)
       .gte("quality_score", minScore);
@@ -245,16 +279,19 @@ export async function GET(req: Request) {
       query = query.in("id", paperIdFilter);
     }
 
-    const { data: papers, error: paperErr, count } = await query
+    const { data: papers, error: paperErr } = await query
       .order("quality_score", { ascending: false })
       .order("ai_med_score", { ascending: false })
-      .order("publication_date", { ascending: false })
-      .range(fromIndex, toIndex);
+      .order("publication_date", { ascending: false });
     if (paperErr) {
       return NextResponse.json({ error: paperErr.message }, { status: 500 });
     }
-    paperRows = (papers ?? []) as DbPaper[];
-    total = count ?? 0;
+    let orderedRows = (papers ?? []) as DbPaper[];
+    if (profileKeywords.length) {
+      orderedRows = orderedRows.filter((paper) => matchesAnyKeyword(paper, profileKeywords));
+    }
+    total = orderedRows.length;
+    paperRows = orderedRows.slice(fromIndex, toIndex + 1);
   }
   const interactions = new Map<string, { pdf_emailed_at: string | null }>();
   if (userId && paperRows.length) {

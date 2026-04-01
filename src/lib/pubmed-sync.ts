@@ -91,6 +91,8 @@ const TOPIC_KEYWORD_LIBRARY: Record<string, string[]> = {
     "ct",
     "mri",
     "ultrasound",
+    "echocardiography",
+    "cardiac imaging",
     "x-ray",
     "dicom",
     "segmentation",
