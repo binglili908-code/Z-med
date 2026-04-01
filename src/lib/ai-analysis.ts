@@ -20,17 +20,14 @@ type QueueRow = {
   status: string;
 };
 
-type AiAnalysisResult = {
-  summary_zh: string;
-  background: string;
-  method: string;
-  value: string;
-};
-
 const MODEL_NAME = "deepseek-chat";
-const ANALYSIS_VERSION = "v1";
 const MAX_BATCH_SIZE = 20;
-const SYSTEM_PROMPT = `你是一位 AI 与医学交叉领域的资深科研顾问。请基于给定论文信息，用中文生成结构化解读。请严格输出 JSON 对象，不要输出任何其他内容。`;
+const SYSTEM_PROMPT = `你是一位专业的医学翻译。请将以下英文医学论文摘要翻译为准确、流畅的中文。
+要求：
+1. 专业术语使用标准中文医学翻译
+2. 保持原文的逻辑结构和信息完整性
+3. 不要添加任何解读、评论或总结，只做翻译
+4. 直接输出翻译后的中文文本，不要加引号或标记`;
 
 function readLocalEnvValue(name: string) {
   if (process.env.NODE_ENV === "production") return null;
@@ -71,33 +68,6 @@ function toQueuePriority(qualityScore: unknown) {
   return Math.max(0, Math.round(v * 10000));
 }
 
-function extractJsonObject(text: string) {
-  const trimmed = text.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      const slice = trimmed.slice(start, end + 1);
-      return JSON.parse(slice);
-    }
-    throw new Error("Model output is not valid JSON");
-  }
-}
-
-function toAiAnalysisObject(obj: unknown): AiAnalysisResult {
-  const data = (obj ?? {}) as Record<string, unknown>;
-  const summary_zh = typeof data.summary_zh === "string" ? data.summary_zh.trim() : "";
-  const background = typeof data.background === "string" ? data.background.trim() : "";
-  const method = typeof data.method === "string" ? data.method.trim() : "";
-  const value = typeof data.value === "string" ? data.value.trim() : "";
-  if (!summary_zh || !background || !method || !value) {
-    throw new Error("Model JSON missing required fields");
-  }
-  return { summary_zh, background, method, value };
-}
-
 async function callDeepSeekAnalysis(paper: PaperRow) {
   const apiKey = getDeepSeekApiKey();
   if (!apiKey) {
@@ -106,15 +76,7 @@ async function callDeepSeekAnalysis(paper: PaperRow) {
 
   const userPrompt = `论文标题：${paper.title}
 期刊：${paper.journal ?? "Unknown"}
-摘要：${paper.abstract ?? "无摘要"}
-
-请严格按以下 JSON 格式输出（不要输出任何其他内容）：
-{
-  "summary_zh": "用 2-3 句中文概括这篇论文在做什么",
-  "background": "这项研究的背景和动机是什么？解决了什么痛点？（2-3 句）",
-  "method": "核心技术方法是什么？创新点在哪？（2-3 句）",
-  "value": "这项研究对临床医生或科研人员有什么实际价值？（2-3 句）"
-}`;
+摘要原文：${paper.abstract ?? "无摘要"}`;
 
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
@@ -128,8 +90,7 @@ async function callDeepSeekAnalysis(paper: PaperRow) {
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.3,
-      response_format: { type: "json_object" },
+      temperature: 0.1,
     }),
     cache: "no-store",
   });
@@ -146,8 +107,7 @@ async function callDeepSeekAnalysis(paper: PaperRow) {
   if (!content) {
     throw new Error("DeepSeek response has no content");
   }
-  const parsed = extractJsonObject(content);
-  return toAiAnalysisObject(parsed);
+  return content.trim();
 }
 
 async function ensurePlatformQueue(supabase: ReturnType<typeof createServiceSupabaseClient>) {
@@ -155,7 +115,8 @@ async function ensurePlatformQueue(supabase: ReturnType<typeof createServiceSupa
     .from("papers")
     .select("id,quality_score")
     .eq("is_ai_med", true)
-    .is("ai_analysis", null)
+    .is("abstract_zh", null)
+    .not("abstract", "is", null)
     .order("quality_score", { ascending: false })
     .limit(200);
   if (candidateErr) {
@@ -237,7 +198,7 @@ export async function runAiAnalysisCronJob() {
   const paperIds = jobs.map((j) => j.paper_id);
   const { data: papers, error: paperErr } = await supabase
     .from("papers")
-    .select("id,title,journal,abstract,quality_score")
+    .select("id,title,journal,abstract,quality_score,abstract_zh")
     .in("id", paperIds);
   if (paperErr) {
     throw new Error(`Load papers for AI jobs failed: ${paperErr.message}`);
@@ -267,18 +228,12 @@ export async function runAiAnalysisCronJob() {
     }
 
     try {
-      const analysis = await callDeepSeekAnalysis(paper);
-      const payload = {
-        ...analysis,
-        model_used: MODEL_NAME,
-        generated_at: new Date().toISOString(),
-        version: ANALYSIS_VERSION,
-      };
+      const translated = await callDeepSeekAnalysis(paper);
 
       const { error: updatePaperErr } = await supabase
         .from("papers")
         .update({
-          ai_analysis: payload,
+          abstract_zh: translated,
           updated_at: new Date().toISOString(),
         })
         .eq("id", paper.id);

@@ -4,36 +4,38 @@ import * as React from "react";
 import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
-type TopicItem = {
+type JournalItem = {
   id: string;
-  slug: string;
-  name_zh: string | null;
-  name_en: string | null;
+  journal_name: string | null;
+  aliases: string[] | null;
+  tier: string | null;
+  weight: number | null;
+  is_active: boolean | null;
 };
 
-type TopicListResponse = {
-  items?: TopicItem[];
+type JournalListResponse = {
+  items?: JournalItem[];
 };
 
 type UserSubscription = {
-  topic_slugs: string[];
+  journal_ids: string[];
+  custom_journals: string[];
   keywords: string[];
   top_journals_only: boolean;
-  min_score?: number;
 };
 
 export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
   const [email, setEmail] = React.useState<string | null>(null);
   const [token, setToken] = React.useState<string | null>(null);
-  const [topics, setTopics] = React.useState<TopicItem[]>([]);
-  const [topicSlugs, setTopicSlugs] = React.useState<string[]>([]);
+  const [journals, setJournals] = React.useState<JournalItem[]>([]);
+  const [selectedJournalIds, setSelectedJournalIds] = React.useState<string[]>([]);
+  const [customJournals, setCustomJournals] = React.useState<string[]>([]);
+  const [customJournalInput, setCustomJournalInput] = React.useState("");
   const [keywords, setKeywords] = React.useState<string[]>([]);
   const [keywordInput, setKeywordInput] = React.useState("");
   const [topJournalsOnly, setTopJournalsOnly] = React.useState(false);
-  const [minScore, setMinScore] = React.useState(0);
   const [saving, setSaving] = React.useState(false);
-  const [refreshing, setRefreshing] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
 
   const supabase = React.useMemo(() => {
@@ -56,23 +58,23 @@ export default function SettingsPage() {
       setToken(session?.access_token ?? null);
       if (session?.access_token) {
         try {
-          const [topicRes, subRes] = await Promise.all([
-            fetch("/api/research-topics", { cache: "no-store" }),
+          const [journalRes, subRes] = await Promise.all([
+            fetch("/api/journal-quality", { cache: "no-store" }),
             fetch("/api/user/subscription", {
               cache: "no-store",
               headers: { Authorization: `Bearer ${session.access_token}` },
             }),
           ]);
-          if (topicRes.ok) {
-            const topicJson = (await topicRes.json()) as TopicListResponse;
-            setTopics(topicJson.items ?? []);
+          if (journalRes.ok) {
+            const journalJson = (await journalRes.json()) as JournalListResponse;
+            setJournals((journalJson.items ?? []).filter((item) => item.is_active !== false));
           }
           if (subRes.ok) {
             const subJson = (await subRes.json()) as UserSubscription;
-            setTopicSlugs(subJson.topic_slugs ?? []);
+            setSelectedJournalIds(subJson.journal_ids ?? []);
+            setCustomJournals(subJson.custom_journals ?? []);
             setKeywords(subJson.keywords ?? []);
             setTopJournalsOnly(Boolean(subJson.top_journals_only));
-            setMinScore(Number(subJson.min_score ?? 0));
           }
         } catch {
           setMessage("订阅配置加载失败，请刷新后重试。");
@@ -94,9 +96,20 @@ export default function SettingsPage() {
     setKeywords((prev) => prev.filter((k) => k !== value));
   }, []);
 
-  const toggleTopic = React.useCallback((slug: string) => {
-    setTopicSlugs((prev) =>
-      prev.includes(slug) ? prev.filter((x) => x !== slug) : [...prev, slug],
+  const addCustomJournal = React.useCallback(() => {
+    const value = customJournalInput.trim();
+    if (!value) return;
+    setCustomJournals((prev) => (prev.includes(value) ? prev : [...prev, value]));
+    setCustomJournalInput("");
+  }, [customJournalInput]);
+
+  const removeCustomJournal = React.useCallback((value: string) => {
+    setCustomJournals((prev) => prev.filter((name) => name !== value));
+  }, []);
+
+  const toggleJournal = React.useCallback((journalId: string) => {
+    setSelectedJournalIds((prev) =>
+      prev.includes(journalId) ? prev.filter((id) => id !== journalId) : [...prev, journalId],
     );
   }, []);
 
@@ -112,10 +125,10 @@ export default function SettingsPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          topic_slugs: topicSlugs,
+          journal_ids: selectedJournalIds,
+          custom_journals: customJournals,
           keywords,
           top_journals_only: topJournalsOnly,
-          min_score: minScore,
         } satisfies UserSubscription),
       });
       const payload = (await res.json()) as { error?: string };
@@ -129,31 +142,14 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [keywords, minScore, token, topJournalsOnly, topicSlugs]);
+  }, [customJournals, keywords, selectedJournalIds, token, topJournalsOnly]);
 
-  const refreshRecommendations = React.useCallback(async () => {
-    if (!token) return;
-    setRefreshing(true);
-    setMessage(null);
-    try {
-      const res = await fetch("/api/user/recommendations/refresh", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      const payload = (await res.json()) as { error?: string; count?: number };
-      if (!res.ok) {
-        setMessage(payload.error ?? "推荐刷新失败，请重试。");
-        return;
-      }
-      setMessage(`今日推荐已刷新，共生成 ${payload.count ?? 0} 条。`);
-    } catch {
-      setMessage("推荐刷新失败，请重试。");
-    } finally {
-      setRefreshing(false);
-    }
-  }, [token]);
+  const groupedJournals = React.useMemo(() => {
+    const top = journals.filter((j) => (j.tier ?? "").toLowerCase() === "top");
+    const core = journals.filter((j) => (j.tier ?? "").toLowerCase() === "core");
+    const emerging = journals.filter((j) => (j.tier ?? "").toLowerCase() === "emerging");
+    return { top, core, emerging };
+  }, [journals]);
 
   if (loading) {
     return (
@@ -181,35 +177,84 @@ export default function SettingsPage() {
       <p className="mt-3 text-slate-600">当前登录账号：{email}</p>
       <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6">
         <h2 className="text-xl font-bold text-slate-900">订阅偏好</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          选择你关注的研究方向，并补充关键词，系统将优先展示相关文献。
-        </p>
+        <p className="mt-2 text-sm text-slate-600">选择期刊并设置关键词，系统将按期刊与关键词联合筛选文献。</p>
 
         <div className="mt-6">
-          <h3 className="text-sm font-semibold text-slate-900">研究方向（可多选）</h3>
-          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {topics.map((topic) => {
-              const checked = topicSlugs.includes(topic.slug);
-              const label = topic.name_zh || topic.name_en || topic.slug;
-              return (
-                <label
-                  key={topic.id}
-                  className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm ${
-                    checked
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-300 bg-white text-slate-700"
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleTopic(topic.slug)}
-                    className="h-4 w-4"
-                  />
-                  <span>{label}</span>
-                </label>
-              );
-            })}
+          <h3 className="text-sm font-semibold text-slate-900">期刊选择</h3>
+          <div className="mt-3 space-y-5">
+            {[{ key: "top", label: "Top Tier", style: "text-amber-700 border-amber-300 bg-amber-50", list: groupedJournals.top },
+              { key: "core", label: "Core Tier", style: "text-blue-700 border-blue-300 bg-blue-50", list: groupedJournals.core },
+              { key: "emerging", label: "Emerging Tier", style: "text-slate-700 border-slate-300 bg-slate-50", list: groupedJournals.emerging }].map((group) => (
+              <div key={group.key}>
+                <div className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold ${group.style}`}>
+                  {group.label}
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {group.list.map((journal) => {
+                    const checked = selectedJournalIds.includes(journal.id);
+                    const aliasText = (journal.aliases ?? []).slice(0, 2).join(" / ");
+                    return (
+                      <label
+                        key={journal.id}
+                        className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${
+                          checked
+                            ? "border-slate-900 bg-slate-900 text-white"
+                            : "border-slate-300 bg-white text-slate-700"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleJournal(journal.id)}
+                          className="mt-0.5 h-4 w-4"
+                        />
+                        <span>
+                          <span className="block font-semibold">{journal.journal_name || "Unknown Journal"}</span>
+                          {aliasText ? <span className="block text-xs opacity-80">{aliasText}</span> : null}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-slate-900">添加其他期刊</h3>
+          <div className="mt-3 flex gap-2">
+            <input
+              value={customJournalInput}
+              onChange={(e) => setCustomJournalInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addCustomJournal();
+                }
+              }}
+              placeholder="输入期刊名后回车添加"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
+            />
+            <button
+              type="button"
+              onClick={addCustomJournal}
+              className="rounded-lg border border-slate-900 px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+            >
+              添加
+            </button>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {customJournals.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => removeCustomJournal(name)}
+                className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+              >
+                {name} ×
+              </button>
+            ))}
           </div>
         </div>
 
@@ -270,7 +315,7 @@ export default function SettingsPage() {
           </button>
         </div>
 
-        <div className="mt-6 flex flex-wrap gap-3">
+        <div className="mt-6">
           <button
             type="button"
             onClick={saveSubscription}
@@ -278,14 +323,6 @@ export default function SettingsPage() {
             className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
           >
             {saving ? "保存中..." : "保存订阅偏好"}
-          </button>
-          <button
-            type="button"
-            onClick={refreshRecommendations}
-            disabled={refreshing}
-            className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-50"
-          >
-            {refreshing ? "刷新中..." : "立即生成今日推荐"}
           </button>
           {message ? <p className="mt-2 text-sm text-slate-600">{message}</p> : null}
         </div>

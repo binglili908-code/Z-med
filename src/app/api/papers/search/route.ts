@@ -11,9 +11,9 @@ function clamp(n: number, min: number, max: number) {
 
 type SearchPaperRow = {
   id: string;
-  pmid: string | number | null;
   title: string | null;
   abstract: string | null;
+  abstract_zh: string | null;
   journal: string | null;
   publication_date: string | null;
   pubmed_url: string | null;
@@ -25,7 +25,6 @@ type SearchPaperRow = {
   quality_tier: string | null;
   keywords: string[] | null;
   mesh_terms: string[] | null;
-  ai_analysis: Record<string, unknown> | null;
 };
 
 function normalizeSearchTerms(q: string) {
@@ -40,11 +39,9 @@ function normalizeSearchTerms(q: string) {
 function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
   if (!terms.length) return true;
   const haystack = [
-    String(paper.pmid ?? ""),
     paper.title ?? "",
     paper.abstract ?? "",
-    paper.journal ?? "",
-    paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
+    paper.abstract_zh ?? "",
   ]
     .join("\n")
     .toLowerCase();
@@ -60,7 +57,6 @@ export async function GET(req: Request) {
   const from = (searchParams.get("from") ?? "").trim();
   const to = (searchParams.get("to") ?? "").trim();
   const oa = (searchParams.get("oa") ?? "").trim().toLowerCase();
-  const topic = (searchParams.get("topic") ?? "").trim().toLowerCase();
   const page = clamp(Number(searchParams.get("page") ?? 1) || 1, 1, 1000);
   const pageSize = clamp(Number(searchParams.get("pageSize") ?? 20) || 20, 1, 50);
   const fromIndex = (page - 1) * pageSize;
@@ -69,7 +65,7 @@ export async function GET(req: Request) {
   let query = supabase
     .from("papers")
     .select(
-      "id,pmid,title,abstract,journal,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms,ai_analysis",
+      "id,title,abstract,abstract_zh,journal,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms",
     )
     .eq("is_ai_med", true);
 
@@ -85,26 +81,6 @@ export async function GET(req: Request) {
   }
   if (oa === "true") {
     query = query.eq("is_open_access", true);
-  }
-
-  if (topic) {
-    const { data: topicRows, error: topicErr } = await supabase
-      .from("paper_research_topics")
-      .select("paper_id,research_topics!inner(slug)")
-      .eq("research_topics.slug", topic);
-    if (topicErr) {
-      return NextResponse.json({ error: topicErr.message }, { status: 500 });
-    }
-    const ids = (topicRows ?? []).map((r) => r.paper_id);
-    if (!ids.length) {
-      return NextResponse.json({
-        page,
-        pageSize,
-        total: 0,
-        items: [],
-      });
-    }
-    query = query.in("id", ids);
   }
 
   const { data, error } = await query

@@ -14,12 +14,23 @@ export interface RecommendationOutput {
 
 type ProfileRow = {
   top_journals_only: boolean | null;
-  subscription_min_score: number | string | null;
+  subscription_keywords: string[] | null;
+  custom_journals: string[] | null;
 };
 
-function toMinScore(value: ProfileRow["subscription_min_score"] | undefined) {
-  const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
+function normalizeKeywords(values: string[] | null | undefined) {
+  const set = new Set<string>();
+  for (const raw of values ?? []) {
+    const v = raw.trim().toLowerCase();
+    if (v) set.add(v);
+  }
+  return Array.from(set);
+}
+
+function matchesKeyword(texts: string[], keywords: string[]) {
+  if (!keywords.length) return true;
+  const text = texts.join("\n").toLowerCase();
+  return keywords.some((kw) => text.includes(kw));
 }
 
 export async function generateRecommendations(
@@ -30,56 +41,79 @@ export async function generateRecommendations(
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("top_journals_only,subscription_min_score")
+    .select("top_journals_only,subscription_keywords,custom_journals")
     .eq("id", user_id)
     .maybeSingle();
 
   const topOnly = Boolean((profile as ProfileRow | null)?.top_journals_only);
-  const minScore = toMinScore((profile as ProfileRow | null)?.subscription_min_score);
+  const profileKeywords = normalizeKeywords((profile as ProfileRow | null)?.subscription_keywords);
+  const customJournals = normalizeKeywords((profile as ProfileRow | null)?.custom_journals);
 
+  const journalTerms = new Set<string>();
   const { data: subRows } = await supabase
-    .from("user_topic_subscriptions")
-    .select("topic_id")
+    .from("user_journal_subscriptions")
+    .select("journal_quality(journal_name,aliases)")
     .eq("user_id", user_id);
-  const topicIds = Array.from(new Set((subRows ?? []).map((row) => row.topic_id)));
-
-  let paperIdFilter: string[] | null = null;
-  if (topicIds.length) {
-    const { data: relRows } = await supabase
-      .from("paper_research_topics")
-      .select("paper_id,topic_id")
-      .in("topic_id", topicIds);
-    paperIdFilter = Array.from(new Set((relRows ?? []).map((row) => row.paper_id)));
-    if (!paperIdFilter.length) {
-      return [];
+  for (const row of subRows ?? []) {
+    const j = Array.isArray(row.journal_quality) ? row.journal_quality[0] : row.journal_quality;
+    const name = (j?.journal_name ?? "").trim().toLowerCase();
+    if (name) journalTerms.add(name);
+    const aliases = Array.isArray(j?.aliases) ? (j.aliases as unknown[]) : [];
+    for (const alias of aliases.filter((x): x is string => typeof x === "string")) {
+      const v = alias.trim().toLowerCase();
+      if (v) journalTerms.add(v);
     }
+  }
+  for (const item of customJournals) {
+    journalTerms.add(item);
   }
 
   let query = supabase
     .from("papers")
-    .select("id,quality_score")
-    .eq("is_ai_med", true)
-    .gte("quality_score", minScore);
+    .select("id,title,abstract,abstract_zh,journal,quality_score,quality_tier,ai_analysis")
+    .eq("is_ai_med", true);
 
   if (topOnly) {
     query = query.in("quality_tier", ["top", "core"]);
   }
-  if (paperIdFilter) {
-    query = query.in("id", paperIdFilter);
-  }
 
   const { data: papers, error: paperErr } = await query
-    .order("quality_score", { ascending: false })
-    .limit(20);
+    .order("quality_score", { ascending: false });
   if (paperErr) {
     throw new Error(`Failed to load papers: ${paperErr.message}`);
   }
 
-  const outputs: RecommendationOutput[] = (papers ?? []).map((paper) => ({
+  let rows = papers ?? [];
+  if (journalTerms.size) {
+    rows = rows.filter((paper) => {
+      const j = (paper.journal ?? "").trim().toLowerCase();
+      if (!j) return false;
+      for (const term of journalTerms) {
+        if (j === term || j.includes(term) || term.includes(j)) return true;
+      }
+      return false;
+    });
+  }
+  if (profileKeywords.length) {
+    rows = rows.filter((paper) =>
+      matchesKeyword(
+        [
+          paper.title ?? "",
+          paper.abstract ?? "",
+          paper.abstract_zh ?? "",
+          paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
+        ],
+        profileKeywords,
+      ),
+    );
+  }
+  rows = rows.slice(0, 20);
+
+  const outputs: RecommendationOutput[] = rows.map((paper) => ({
     paper_id: paper.id,
     source_type: "precision",
     recommendation_score: Number(paper.quality_score ?? 0),
-    reason: "基于订阅偏好与质量分推荐",
+    reason: "基于期刊订阅与关键词匹配推荐",
   }));
 
   if (outputs.length) {

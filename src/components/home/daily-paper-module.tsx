@@ -3,7 +3,7 @@
 import * as React from "react";
 
 import Link from "next/link";
-import { Brain, Clock, Dna, Sparkles, Stethoscope } from "lucide-react";
+import { Clock, Sparkles } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
 type FeedPaper = {
@@ -11,6 +11,7 @@ type FeedPaper = {
   title: string;
   journal: string;
   publication_date: string | null;
+  abstract_zh: string | null;
   quality_score: number;
   quality_tier: "top" | "core" | "emerging";
   pubmed_url: string;
@@ -22,7 +23,6 @@ type FeedPaper = {
     method: string;
     value: string;
   } | null;
-  topics: Array<{ name_zh: string; confidence: number }>;
   source_type: "precision" | "trending" | "serendipity";
   recommendation_reason: string | null;
   pdf_emailed_at: string | null;
@@ -70,15 +70,6 @@ type SyncApiResponse = {
   aiMedCount?: number;
 };
 
-type TopicListResponse = {
-  items?: Array<{
-    id: string;
-    slug: string;
-    name_zh: string | null;
-    name_en: string | null;
-  }>;
-};
-
 type DailyPaperView = {
   id: string;
   title: string;
@@ -91,13 +82,7 @@ type DailyPaperView = {
   oaPdfUrl: string | null;
   pdfEmailedAt: string | null;
   tagsRaw: string[];
-  topics: Array<{ slug: string; nameZh: string | null; nameEn: string | null }>;
-  aiDigest: {
-    summaryZh: string;
-    background: string;
-    method: string;
-    value: string;
-  };
+  abstractZh: string;
   sourceType: "precision" | "trending" | "serendipity";
   recommendationReason: string | null;
 };
@@ -106,31 +91,20 @@ function parseDate(date: string | null) {
   return date ?? "Today";
 }
 
-function fromAiAnalysis(ai: Record<string, unknown> | null, fallbackDate: string) {
-  const summaryZh =
-    typeof ai?.summary_zh === "string"
-      ? ai.summary_zh
-      : `数据库已同步该文献，发布日期 ${fallbackDate}。如需更深入临床可用性总结，可后续启用 AI 自动结构化分析。`;
-  const background =
-    typeof ai?.background === "string"
-      ? ai.background
-      : "待生成（研究背景与动机）";
-  const method =
-    typeof ai?.method === "string"
-      ? ai.method
-      : "待生成（核心方法与创新点）";
-  const value =
-    typeof ai?.value === "string"
-      ? ai.value
-      : "待生成（临床与科研价值）";
-
-  return { summaryZh, background, method, value };
+function resolveAbstractZh(
+  abstractZh: string | null,
+  ai: Record<string, unknown> | null,
+  fallbackDate: string,
+) {
+  if (abstractZh?.trim()) return abstractZh.trim();
+  if (typeof ai?.summary_zh === "string" && ai.summary_zh.trim()) return ai.summary_zh.trim();
+  return `中文摘要待生成（文献发布日期 ${fallbackDate}）。`;
 }
 
 function toDailyPaperView(p: FeedPaper): DailyPaperView {
   const journal = p.journal ?? "PubMed";
   const date = parseDate(p.publication_date);
-  const ai = fromAiAnalysis(p.ai_analysis, date);
+  const abstractZh = resolveAbstractZh(p.abstract_zh, p.ai_analysis, date);
 
   return {
     id: p.id,
@@ -144,12 +118,7 @@ function toDailyPaperView(p: FeedPaper): DailyPaperView {
     oaPdfUrl: p.oa_pdf_url,
     pdfEmailedAt: p.pdf_emailed_at,
     tagsRaw: [],
-    topics: (p.topics ?? []).map((t, idx) => ({
-      slug: `${p.id}-${idx}`,
-      nameZh: t.name_zh,
-      nameEn: null,
-    })),
-    aiDigest: ai,
+    abstractZh,
     sourceType: p.source_type,
     recommendationReason: p.recommendation_reason,
   };
@@ -167,13 +136,7 @@ const fallbackPaper: DailyPaperView = {
   oaPdfUrl: null,
   pdfEmailedAt: null,
   tagsRaw: [],
-  topics: [],
-  aiDigest: {
-    summaryZh: "数据加载中（占位）。",
-    background: "待生成（研究背景与动机）",
-    method: "待生成（核心方法与创新点）",
-    value: "待生成（临床与科研价值）",
-  },
+  abstractZh: "中文摘要加载中（占位）。",
   sourceType: "precision",
   recommendationReason: null,
 };
@@ -192,8 +155,6 @@ export function DailyPaperModule() {
   const [selfCheckMessage, setSelfCheckMessage] = React.useState<string | null>(null);
   const [syncLoading, setSyncLoading] = React.useState(false);
   const [syncMessage, setSyncMessage] = React.useState<string | null>(null);
-  const [topicList, setTopicList] = React.useState<Array<{ slug: string; label: string }>>([]);
-  const [selectedTopic, setSelectedTopic] = React.useState<string>("all");
   const [listPage, setListPage] = React.useState(1);
   const listPageSize = 6;
 
@@ -212,7 +173,6 @@ export function DailyPaperModule() {
     try {
       const token = await getAccessToken();
       const params = new URLSearchParams();
-      if (selectedTopic !== "all") params.set("topic", selectedTopic);
       params.set("page", "1");
       params.set("pageSize", "60");
       const res = await fetch(`/api/papers/feed${params.toString() ? `?${params.toString()}` : ""}`, {
@@ -235,29 +195,11 @@ export function DailyPaperModule() {
     } catch {
       return;
     }
-  }, [getAccessToken, selectedTopic]);
+  }, [getAccessToken]);
 
   React.useEffect(() => {
     void loadFeed();
   }, [loadFeed]);
-
-  React.useEffect(() => {
-    async function loadTopics() {
-      try {
-        const res = await fetch("/api/research-topics", { cache: "no-store" });
-        if (!res.ok) return;
-        const json = (await res.json()) as TopicListResponse;
-        const list = (json.items ?? []).map((t) => ({
-          slug: t.slug,
-          label: t.name_zh || t.name_en || t.slug,
-        }));
-        setTopicList(list);
-      } catch {
-        return;
-      }
-    }
-    void loadTopics();
-  }, []);
 
   const handleSendPdf = React.useCallback(
     async (paperId: string) => {
@@ -386,38 +328,9 @@ export function DailyPaperModule() {
         </a>
       </div>
 
-      {topicList.length ? (
-        <div className="mb-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setSelectedTopic("all")}
-            className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
-              selectedTopic === "all"
-                ? "border-slate-900 bg-slate-900 text-white"
-                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-            }`}
-          >
-            全部方向
-          </button>
-          {topicList.map((t) => (
-            <button
-              key={t.slug}
-              type="button"
-              onClick={() => setSelectedTopic(t.slug)}
-              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
-                selectedTopic === t.slug
-                  ? "border-slate-900 bg-slate-900 text-white"
-                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
       {requiresLogin ? (
         <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          研究方向订阅和邮件发送功能需登录后使用。{" "}
+          个性化订阅和邮件发送功能需登录后使用。{" "}
           <Link href="/signin" className="font-semibold text-slate-900 underline">
             请先登录
           </Link>
@@ -457,24 +370,6 @@ export function DailyPaperModule() {
         {paper.recommendationReason ? (
           <p className="mb-2 text-xs text-slate-500">{paper.recommendationReason}</p>
         ) : null}
-        <div className="flex flex-wrap gap-2">
-          {paper.tagsRaw.slice(0, 3).map((t) => (
-            <span
-              key={t}
-              className="text-[10px] uppercase font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md"
-            >
-              {t}
-            </span>
-          ))}
-          {paper.topics.slice(0, 2).map((t) => (
-            <span
-              key={t.slug}
-              className="text-[10px] uppercase font-bold text-teal-700 bg-teal-50 px-2 py-1 rounded-md"
-            >
-              {t.nameZh || t.nameEn || t.slug}
-            </span>
-          ))}
-        </div>
       </div>
 
       <div className="mb-4">
@@ -513,50 +408,9 @@ export function DailyPaperModule() {
       <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 flex-grow z-10">
         <h4 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
           <div className="w-1.5 h-4 bg-teal-500 rounded-full"></div>
-          AI Summary
+          中文摘要
         </h4>
-        <p className="text-slate-700 text-sm leading-relaxed mb-6">
-          {paper.aiDigest.summaryZh}
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-white p-3 rounded-xl border border-slate-200">
-            <div className="text-[10px] uppercase font-bold text-slate-400 mb-1">
-              研究背景 (Background)
-            </div>
-            <div className="text-sm font-medium text-slate-800 flex items-center gap-1.5">
-              <Stethoscope className="w-4 h-4 text-teal-600" />
-              {paper.aiDigest.background}
-            </div>
-          </div>
-          <div className="bg-white p-3 rounded-xl border border-slate-200">
-            <div className="text-[10px] uppercase font-bold text-slate-400 mb-1">
-              核心方法 (Method)
-            </div>
-            <div className="text-sm font-medium text-slate-800 flex items-center gap-1.5">
-              <Brain className="w-4 h-4 text-indigo-500" />
-              {paper.aiDigest.method}
-            </div>
-          </div>
-          <div className="bg-white p-3 rounded-xl border border-slate-200">
-            <div className="text-[10px] uppercase font-bold text-slate-400 mb-1">
-              临床价值 (Value)
-            </div>
-            <div className="text-sm font-medium text-slate-800 flex items-center gap-1.5">
-              <Dna className="w-4 h-4 text-blue-500" />
-              {paper.aiDigest.value}
-            </div>
-          </div>
-          <div className="bg-white p-3 rounded-xl border border-slate-200">
-            <div className="text-[10px] uppercase font-bold text-slate-400 mb-1">
-              摘要翻译 (Summary)
-            </div>
-            <div className="text-sm font-medium text-slate-800 flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-amber-500" />
-              {paper.aiDigest.summaryZh}
-            </div>
-          </div>
-        </div>
+        <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-wrap">{paper.abstractZh}</p>
       </div>
 
       {items.length ? (
