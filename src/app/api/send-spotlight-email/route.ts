@@ -19,22 +19,6 @@ function getBearerToken(req: Request) {
   return matched?.[1];
 }
 
-function getResend() {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing required env: RESEND_API_KEY");
-  }
-  return new Resend(apiKey);
-}
-
-function getFromEmail() {
-  const from = process.env.RESEND_FROM_EMAIL;
-  if (!from) {
-    throw new Error("Missing required env: RESEND_FROM_EMAIL");
-  }
-  return from;
-}
-
 async function resolveBypassUserId(service: ReturnType<typeof createServiceSupabaseClient>) {
   const direct = getDevBypassUserId();
   if (direct) return direct;
@@ -123,20 +107,45 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No contact email found for this user" }, { status: 400 });
   }
 
-  const { items } = await buildSpotlightPapers({ userId: user.id, service });
+  let items: Awaited<ReturnType<typeof buildSpotlightPapers>>["items"] = [];
+  try {
+    const result = await buildSpotlightPapers({ userId: user.id, service });
+    items = result.items;
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? `Build spotlight failed: ${error.message}` : "Build spotlight failed" },
+      { status: 500 },
+    );
+  }
   if (!items.length) {
     return NextResponse.json({ error: "No spotlight papers available" }, { status: 400 });
   }
 
-  const resend = getResend();
-  const from = getFromEmail();
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  if (!resendApiKey) {
+    return NextResponse.json({ error: "Missing required env: RESEND_API_KEY" }, { status: 500 });
+  }
+  const from = process.env.RESEND_FROM_EMAIL?.trim();
+  if (!from) {
+    return NextResponse.json({ error: "Missing required env: RESEND_FROM_EMAIL" }, { status: 500 });
+  }
+  const resend = new Resend(resendApiKey);
   const html = buildDigestHtml(items);
-  const { error: mailErr } = await resend.emails.send({
-    from,
-    to: emailTo,
-    subject: "今日精选 7 篇文献（含中文摘要）",
-    html,
-  });
+  let mailErr: { message: string } | null = null;
+  try {
+    const resp = await resend.emails.send({
+      from,
+      to: emailTo,
+      subject: "今日精选 7 篇文献（含中文摘要）",
+      html,
+    });
+    mailErr = resp.error ?? null;
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? `Email sending failed: ${error.message}` : "Email sending failed" },
+      { status: 500 },
+    );
+  }
   if (mailErr) {
     return NextResponse.json({ error: `Email sending failed: ${mailErr.message}` }, { status: 500 });
   }

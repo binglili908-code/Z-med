@@ -22,22 +22,6 @@ function getBearerToken(req: Request) {
   return matched?.[1];
 }
 
-function getResend() {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing required env: RESEND_API_KEY");
-  }
-  return new Resend(apiKey);
-}
-
-function getFromEmail() {
-  const from = process.env.RESEND_FROM_EMAIL;
-  if (!from) {
-    throw new Error("Missing required env: RESEND_FROM_EMAIL");
-  }
-  return from;
-}
-
 async function resolveBypassUserId(serviceClient: ReturnType<typeof createServiceSupabaseClient>) {
   const direct = getDevBypassUserId();
   if (direct) return direct;
@@ -136,8 +120,21 @@ export async function POST(req: Request) {
     );
   }
 
-  const resend = getResend();
-  const from = getFromEmail();
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  if (!resendApiKey) {
+    return NextResponse.json(
+      { error: "Missing required env: RESEND_API_KEY" },
+      { status: 500 },
+    );
+  }
+  const from = process.env.RESEND_FROM_EMAIL?.trim();
+  if (!from) {
+    return NextResponse.json(
+      { error: "Missing required env: RESEND_FROM_EMAIL" },
+      { status: 500 },
+    );
+  }
+  const resend = new Resend(resendApiKey);
 
   const subject = `文献全文链接：${paper.title}`;
   const html = `
@@ -150,12 +147,26 @@ export async function POST(req: Request) {
     </div>
   `;
 
-  const { error: mailErr } = await resend.emails.send({
-    from,
-    to: emailTo,
-    subject,
-    html,
-  });
+  let mailErr: { message: string } | null = null;
+  try {
+    const resp = await resend.emails.send({
+      from,
+      to: emailTo,
+      subject,
+      html,
+    });
+    mailErr = resp.error ?? null;
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? `Email sending failed: ${error.message}`
+            : "Email sending failed",
+      },
+      { status: 500 },
+    );
+  }
 
   if (mailErr) {
     return NextResponse.json(
