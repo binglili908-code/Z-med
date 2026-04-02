@@ -36,7 +36,7 @@ type SubjectSearchResult = {
     journal_name: string;
     tier: "top" | "core" | "emerging";
     weight: number;
-    impact_factor: number;
+    impact_factor: number | null;
     jcr_quartile: string;
     cas_zone: string;
   }[];
@@ -167,8 +167,11 @@ export default function SettingsPage() {
   }, [customJournals, keywords, selectedJournalIds, token, topJournalsOnly]);
 
   const groupedJournals = React.useMemo(() => {
-    const byImpactDesc = (a: JournalItem, b: JournalItem) =>
-      Number(b.impact_factor ?? 0) - Number(a.impact_factor ?? 0);
+    const byImpactDesc = (a: JournalItem, b: JournalItem) => {
+      const ai = a.impact_factor == null ? -1 : Number(a.impact_factor);
+      const bi = b.impact_factor == null ? -1 : Number(b.impact_factor);
+      return bi - ai;
+    };
     const top = journals
       .filter((j) => (j.tier ?? "").toLowerCase() === "top")
       .sort(byImpactDesc);
@@ -182,8 +185,25 @@ export default function SettingsPage() {
   }, [journals]);
 
   const formatIf = React.useCallback((value: number | null | undefined) => {
-    if (!value || value <= 0) return "—";
+    if (value == null || value <= 0) return "N/A";
     return Number(value).toFixed(2).replace(/\.00$/, "");
+  }, []);
+
+  const jcrBadgeClass = React.useCallback((jcr: string | null | undefined) => {
+    const v = (jcr ?? "").trim().toUpperCase();
+    if (v === "Q1") return "bg-emerald-100 text-emerald-700 border-emerald-200";
+    if (v === "Q2") return "bg-sky-100 text-sky-700 border-sky-200";
+    if (v === "Q3") return "bg-violet-100 text-violet-700 border-violet-200";
+    if (v === "Q4") return "bg-rose-100 text-rose-700 border-rose-200";
+    return "bg-slate-100 text-slate-700 border-slate-200";
+  }, []);
+
+  const casBadgeClass = React.useCallback((cas: string | null | undefined) => {
+    const v = (cas ?? "").trim();
+    if (v.startsWith("1")) return "bg-amber-100 text-amber-700 border-amber-200";
+    if (v.startsWith("2")) return "bg-cyan-100 text-cyan-700 border-cyan-200";
+    if (v.startsWith("3")) return "bg-indigo-100 text-indigo-700 border-indigo-200";
+    return "bg-slate-100 text-slate-700 border-slate-200";
   }, []);
 
   React.useEffect(() => {
@@ -324,8 +344,20 @@ export default function SettingsPage() {
                       >
                         {(journal.tier ?? "emerging").toUpperCase()}
                       </span>
-                      <span className="mt-1 block text-xs opacity-80">
-                        IF: {formatIf(journal.impact_factor)} | {journal.jcr_quartile || "—"} | {journal.cas_zone || "—"}
+                      <span className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-semibold">
+                        <span className="inline-flex rounded-md border border-amber-200 bg-amber-100 px-2 py-0.5 text-amber-700">
+                          IF {formatIf(journal.impact_factor)}
+                        </span>
+                        <span
+                          className={`inline-flex rounded-md border px-2 py-0.5 ${jcrBadgeClass(journal.jcr_quartile)}`}
+                        >
+                          {journal.jcr_quartile || "JCR 暂无"}
+                        </span>
+                        <span
+                          className={`inline-flex rounded-md border px-2 py-0.5 ${casBadgeClass(journal.cas_zone)}`}
+                        >
+                          {journal.cas_zone || "中科院暂无"}
+                        </span>
                       </span>
                     </span>
                   </label>
@@ -367,8 +399,20 @@ export default function SettingsPage() {
                         <span>
                           <span className="block font-semibold">{journal.journal_name || "Unknown Journal"}</span>
                           {aliasText ? <span className="block text-xs opacity-80">{aliasText}</span> : null}
-                          <span className="block text-xs opacity-80">
-                            IF: {formatIf(journal.impact_factor)} | {journal.jcr_quartile || "—"} | {journal.cas_zone || "—"}
+                          <span className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-semibold">
+                            <span className="inline-flex rounded-md border border-amber-200 bg-amber-100 px-2 py-0.5 text-amber-700">
+                              IF {formatIf(journal.impact_factor)}
+                            </span>
+                            <span
+                              className={`inline-flex rounded-md border px-2 py-0.5 ${jcrBadgeClass(journal.jcr_quartile)}`}
+                            >
+                              {journal.jcr_quartile || "JCR 暂无"}
+                            </span>
+                            <span
+                              className={`inline-flex rounded-md border px-2 py-0.5 ${casBadgeClass(journal.cas_zone)}`}
+                            >
+                              {journal.cas_zone || "中科院暂无"}
+                            </span>
                           </span>
                         </span>
                       </label>

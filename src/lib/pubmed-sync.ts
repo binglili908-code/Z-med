@@ -651,6 +651,82 @@ function chunk<T>(arr: T[], size: number) {
   return out;
 }
 
+function decodeXmlEntities(input: string) {
+  return input
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'");
+}
+
+function stripXmlTags(input: string) {
+  return input.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function parseAbstractFromArticleXml(articleXml: string) {
+  const abstractMatches = Array.from(
+    articleXml.matchAll(/<AbstractText\b[^>]*>([\s\S]*?)<\/AbstractText>/gi),
+  );
+  if (!abstractMatches.length) return null;
+  const parts = abstractMatches
+    .map((m) => stripXmlTags(decodeXmlEntities(m[1] ?? "")))
+    .filter(Boolean);
+  if (!parts.length) return null;
+  return parts.join("\n");
+}
+
+async function pubmedEfetchAbstractMap(ids: string[]) {
+  if (!ids.length) return new Map<string, string>();
+  const params = new URLSearchParams({
+    db: "pubmed",
+    retmode: "xml",
+    id: ids.join(","),
+  });
+  if (process.env.NCBI_API_KEY) params.set("api_key", process.env.NCBI_API_KEY);
+  if (process.env.NCBI_TOOL) params.set("tool", process.env.NCBI_TOOL);
+  if (process.env.NCBI_EMAIL) params.set("email", process.env.NCBI_EMAIL);
+
+  const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?${params.toString()}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) return new Map<string, string>();
+  const xml = await res.text();
+  const map = new Map<string, string>();
+  const articleBlocks = Array.from(xml.matchAll(/<PubmedArticle>[\s\S]*?<\/PubmedArticle>/gi));
+  for (const block of articleBlocks) {
+    const articleXml = block[0];
+    const pmidMatch = articleXml.match(/<PMID[^>]*>(\d+)<\/PMID>/i);
+    const pmid = pmidMatch?.[1];
+    if (!pmid) continue;
+    const abstract = parseAbstractFromArticleXml(articleXml);
+    if (abstract) {
+      map.set(pmid, abstract);
+    }
+  }
+  return map;
+}
+
+async function enrichSummariesWithAbstracts(summaries: PubmedSummary[]) {
+  if (!summaries.length) return summaries;
+  const byPmid = new Map<string, PubmedSummary>();
+  for (const s of summaries) {
+    byPmid.set(s.pmid, s);
+  }
+  const ids = summaries.map((s) => s.pmid);
+  const groups = chunk(ids, 20);
+  for (const group of groups) {
+    const abstractMap = await pubmedEfetchAbstractMap(group);
+    for (const [pmid, abstract] of abstractMap.entries()) {
+      const curr = byPmid.get(pmid);
+      if (curr) curr.abstract = abstract;
+    }
+    await randomDelay(120, 220);
+  }
+  return summaries;
+}
+
 export async function runPubmedSyncJob() {
   const supabase = createServiceSupabaseClient();
   const journalMap = await loadJournalQualityMap(supabase);
@@ -679,6 +755,7 @@ export async function runPubmedSyncJob() {
     summaries.push(...part);
     await randomDelay(180, 320);
   }
+  await enrichSummariesWithAbstracts(summaries);
 
   const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
     supabase,
@@ -727,6 +804,7 @@ export async function runPubmedBackfillJob() {
     summaries.push(...part);
     await randomDelay(180, 320);
   }
+  await enrichSummariesWithAbstracts(summaries);
 
   const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
     supabase,

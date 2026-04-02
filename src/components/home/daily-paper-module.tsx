@@ -31,8 +31,8 @@ type FeedPaper = {
 type FeedResponse = {
   papers: FeedPaper[];
   total: number;
-  page: number;
-  pageSize: number;
+  page?: number;
+  pageSize?: number;
   personalized: boolean;
   hasSubscription?: boolean;
   requiresLogin: boolean;
@@ -145,6 +145,11 @@ const fallbackPaper: DailyPaperView = {
 export function DailyPaperModule() {
   const [paper, setPaper] = React.useState<DailyPaperView>(fallbackPaper);
   const [items, setItems] = React.useState<DailyPaperView[]>([]);
+  const [browseEnabled, setBrowseEnabled] = React.useState(false);
+  const [browseItems, setBrowseItems] = React.useState<DailyPaperView[]>([]);
+  const [browsePage, setBrowsePage] = React.useState(1);
+  const [browseTotalPages, setBrowseTotalPages] = React.useState(1);
+  const [browseLoading, setBrowseLoading] = React.useState(false);
   const [requiresLogin, setRequiresLogin] = React.useState(false);
   const [hasSubscription, setHasSubscription] = React.useState(false);
   const [devBypassAuth, setDevBypassAuth] = React.useState(false);
@@ -188,12 +193,44 @@ export function DailyPaperModule() {
         setPaper(rows[0]);
       }
       setItems(rows.slice(1));
+      setBrowseEnabled(false);
+      setBrowseItems([]);
+      setBrowsePage(1);
+      setBrowseTotalPages(1);
       setExpandedSummaryIds({});
       setDigestSendState("idle");
     } catch {
       return;
     }
   }, [getAccessToken]);
+
+  const loadBrowse = React.useCallback(
+    async (page: number) => {
+      setBrowseLoading(true);
+      try {
+        const token = await getAccessToken();
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("pageSize", "12");
+        const res = await fetch(`/api/papers/feed?${params.toString()}`, {
+          cache: "no-store",
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as FeedResponse;
+        const rows = (json.papers ?? []).map(toDailyPaperView);
+        const totalPages = Math.max(1, Math.ceil(Number(json.total ?? rows.length) / 12));
+        setBrowseItems(rows);
+        setBrowsePage(page);
+        setBrowseTotalPages(totalPages);
+      } catch {
+        return;
+      } finally {
+        setBrowseLoading(false);
+      }
+    },
+    [getAccessToken],
+  );
 
   React.useEffect(() => {
     void loadFeed();
@@ -214,20 +251,31 @@ export function DailyPaperModule() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
-      const payload = (await res.json()) as SendApiResponse;
       if (!res.ok) {
-        setLastSendMessage(payload.error ?? "发送失败，请重试");
+        let payload: SendApiResponse | null = null;
+        try {
+          payload = (await res.json()) as SendApiResponse;
+        } catch {
+          payload = null;
+        }
+        setLastSendMessage(payload?.error ?? `发送失败（HTTP ${res.status}）`);
         setDigestSendState("error");
         return;
       }
+      let payload: SendApiResponse | null = null;
+      try {
+        payload = (await res.json()) as SendApiResponse;
+      } catch {
+        payload = null;
+      }
       setLastSendMessage(
-        payload.emailedTo
+        payload?.emailedTo
           ? `发送成功：${payload.emailedTo}（共 ${payload.count ?? 0} 篇）`
           : "发送成功",
       );
       setDigestSendState("sent");
     } catch {
-      setLastSendMessage("发送失败，请重试");
+      setLastSendMessage("请求异常：若邮箱已收到可忽略并刷新页面确认状态");
       setDigestSendState("error");
     }
   }, [devBypassAuth, getAccessToken]);
@@ -310,6 +358,11 @@ export function DailyPaperModule() {
       setSyncLoading(false);
     }
   }, [loadFeed]);
+
+  const handleExpandBrowse = React.useCallback(async () => {
+    setBrowseEnabled(true);
+    await loadBrowse(1);
+  }, [loadBrowse]);
 
   return (
     <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm hover:shadow-md transition-shadow flex flex-col h-full relative overflow-hidden">
@@ -464,6 +517,90 @@ export function DailyPaperModule() {
               ) : null}
             </div>
           ))}
+        </div>
+      ) : null}
+
+      <div className="mt-4">
+        {!browseEnabled ? (
+          <button
+            type="button"
+            onClick={handleExpandBrowse}
+            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            查看更多文献
+          </button>
+        ) : null}
+      </div>
+
+      {browseEnabled ? (
+        <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h4 className="text-sm font-bold text-slate-900">更多上新文献</h4>
+            <button
+              type="button"
+              onClick={() => setBrowseEnabled(false)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              收起
+            </button>
+          </div>
+          {browseLoading ? (
+            <div className="py-3 text-xs text-slate-500">加载中...</div>
+          ) : (
+            <div className="space-y-3">
+              {browseItems.map((it) => (
+                <div key={`browse-${it.id}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <a
+                    href={it.pubmedUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm font-semibold text-slate-900 hover:text-teal-700"
+                  >
+                    {it.title}
+                  </a>
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <div className="text-xs text-slate-500">
+                      {it.journal} · {it.date}
+                      {(it.qualityTier ?? "").toLowerCase() === "top" ? " · Top Tier" : ""}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => toggleSummary(`browse-${it.id}`)}
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      {isSummaryExpanded(`browse-${it.id}`) ? "收起摘要" : "摘要"}
+                    </button>
+                  </div>
+                  {isSummaryExpanded(`browse-${it.id}`) ? (
+                    <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 whitespace-pre-wrap">
+                      {it.abstractZh}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  disabled={browsePage <= 1 || browseLoading}
+                  onClick={() => void loadBrowse(Math.max(1, browsePage - 1))}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50"
+                >
+                  上一页
+                </button>
+                <div className="text-xs text-slate-500">
+                  第 {browsePage} / {browseTotalPages} 页
+                </div>
+                <button
+                  type="button"
+                  disabled={browsePage >= browseTotalPages || browseLoading}
+                  onClick={() => void loadBrowse(Math.min(browseTotalPages, browsePage + 1))}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50"
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
 

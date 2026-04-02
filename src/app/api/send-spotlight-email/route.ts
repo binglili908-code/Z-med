@@ -106,7 +106,7 @@ export async function POST(req: Request) {
     .from("profiles")
     .select("contact_email")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
   if (profileErr) {
     return NextResponse.json({ error: `Profile query failed: ${profileErr.message}` }, { status: 500 });
   }

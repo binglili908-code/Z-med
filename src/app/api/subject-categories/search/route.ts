@@ -73,13 +73,17 @@ export async function GET(req: Request) {
     journals: (item.recommended_journal_ids ?? [])
       .map((id) => journalMap.get(id))
       .filter((row): row is JournalRow => Boolean(row))
-      .sort((a, b) => Number(b.impact_factor ?? 0) - Number(a.impact_factor ?? 0))
+      .sort((a, b) => {
+        const ai = a.impact_factor == null ? -1 : Number(a.impact_factor);
+        const bi = b.impact_factor == null ? -1 : Number(b.impact_factor);
+        return bi - ai;
+      })
       .map((row) => ({
         id: row.id,
         journal_name: row.journal_name ?? "",
         tier: ((row.tier ?? "emerging").toLowerCase() as "top" | "core" | "emerging"),
         weight: Number(row.weight ?? 0),
-        impact_factor: Number(row.impact_factor ?? 0),
+        impact_factor: row.impact_factor == null ? null : Number(row.impact_factor),
         jcr_quartile: row.jcr_quartile ?? "",
         cas_zone: row.cas_zone ?? "",
       })),
