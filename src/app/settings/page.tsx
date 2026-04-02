@@ -24,6 +24,18 @@ type UserSubscription = {
   top_journals_only: boolean;
 };
 
+type SubjectSearchResult = {
+  id: string;
+  name_zh: string;
+  name_en: string;
+  journals: {
+    id: string;
+    journal_name: string;
+    tier: "top" | "core" | "emerging";
+    weight: number;
+  }[];
+};
+
 export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
   const [email, setEmail] = React.useState<string | null>(null);
@@ -34,6 +46,10 @@ export default function SettingsPage() {
   const [customJournalInput, setCustomJournalInput] = React.useState("");
   const [keywords, setKeywords] = React.useState<string[]>([]);
   const [keywordInput, setKeywordInput] = React.useState("");
+  const [subjectQuery, setSubjectQuery] = React.useState("");
+  const [subjectLoading, setSubjectLoading] = React.useState(false);
+  const [subjectResults, setSubjectResults] = React.useState<SubjectSearchResult[]>([]);
+  const [selectedSubjectId, setSelectedSubjectId] = React.useState<string | null>(null);
   const [topJournalsOnly, setTopJournalsOnly] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
@@ -151,6 +167,52 @@ export default function SettingsPage() {
     return { top, core, emerging };
   }, [journals]);
 
+  React.useEffect(() => {
+    if (!subjectQuery.trim()) {
+      setSubjectResults([]);
+      setSubjectLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setSubjectLoading(true);
+      try {
+        const res = await fetch(
+          `/api/subject-categories/search?q=${encodeURIComponent(subjectQuery.trim())}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) {
+          if (!cancelled) setSubjectResults([]);
+          return;
+        }
+        const json = (await res.json()) as { items?: SubjectSearchResult[] };
+        if (!cancelled) {
+          setSubjectResults(json.items ?? []);
+        }
+      } catch {
+        if (!cancelled) setSubjectResults([]);
+      } finally {
+        if (!cancelled) setSubjectLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [subjectQuery]);
+
+  const selectedSubject = React.useMemo(
+    () => subjectResults.find((item) => item.id === selectedSubjectId) ?? null,
+    [selectedSubjectId, subjectResults],
+  );
+
+  const tierStyle = React.useCallback((tier: string) => {
+    const v = tier.toLowerCase();
+    if (v === "top") return "text-amber-700 border-amber-300 bg-amber-50";
+    if (v === "core") return "text-blue-700 border-blue-300 bg-blue-50";
+    return "text-slate-700 border-slate-300 bg-slate-50";
+  }, []);
+
   if (loading) {
     return (
       <main className="max-w-4xl mx-auto px-6 pt-10 pb-20">
@@ -180,7 +242,79 @@ export default function SettingsPage() {
         <p className="mt-2 text-sm text-slate-600">选择期刊并设置关键词，系统将按期刊与关键词联合筛选文献。</p>
 
         <div className="mt-6">
-          <h3 className="text-sm font-semibold text-slate-900">期刊选择</h3>
+          <h3 className="text-sm font-semibold text-slate-900">研究领域搜索</h3>
+          <div className="mt-3">
+            <input
+              value={subjectQuery}
+              onChange={(e) => setSubjectQuery(e.target.value)}
+              placeholder="输入你的研究领域，如：肿瘤学、心血管、radiology..."
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
+            />
+            {subjectLoading ? (
+              <div className="mt-2 text-xs text-slate-500">正在匹配学科...</div>
+            ) : null}
+            {!subjectLoading && subjectQuery.trim() && subjectResults.length ? (
+              <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
+                {subjectResults.map((subject) => (
+                  <button
+                    key={subject.id}
+                    type="button"
+                    onClick={() => setSelectedSubjectId(subject.id)}
+                    className={`block w-full rounded-md px-3 py-2 text-left text-sm ${
+                      selectedSubjectId === subject.id
+                        ? "bg-slate-900 text-white"
+                        : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    {subject.name_zh} {subject.name_en ? `· ${subject.name_en}` : ""}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {selectedSubject ? (
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold text-slate-900">
+              推荐期刊：{selectedSubject.name_zh}
+              {selectedSubject.name_en ? ` (${selectedSubject.name_en})` : ""}
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {selectedSubject.journals.map((journal) => {
+                const checked = selectedJournalIds.includes(journal.id);
+                return (
+                  <label
+                    key={journal.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${
+                      checked
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-300 bg-white text-slate-700"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleJournal(journal.id)}
+                      className="mt-0.5 h-4 w-4"
+                    />
+                    <span>
+                      <span className="block font-semibold">{journal.journal_name || "Unknown Journal"}</span>
+                      <span
+                        className={`mt-1 inline-flex rounded-md border px-2 py-0.5 text-[10px] font-semibold ${tierStyle(journal.tier)}`}
+                      >
+                        {(journal.tier ?? "emerging").toUpperCase()}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-slate-900">浏览全部白名单期刊</h3>
           <div className="mt-3 space-y-5">
             {[{ key: "top", label: "Top Tier", style: "text-amber-700 border-amber-300 bg-amber-50", list: groupedJournals.top },
               { key: "core", label: "Core Tier", style: "text-blue-700 border-blue-300 bg-blue-50", list: groupedJournals.core },
