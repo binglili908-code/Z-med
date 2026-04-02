@@ -44,6 +44,7 @@ type FeedResponse = {
 type SendApiResponse = {
   ok?: boolean;
   emailedTo?: string;
+  count?: number;
   error?: string;
 };
 
@@ -149,14 +150,13 @@ export function DailyPaperModule() {
   const [devBypassAuth, setDevBypassAuth] = React.useState(false);
   const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(null);
   const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(null);
-  const [sendState, setSendState] = React.useState<Record<string, "idle" | "sending" | "sent" | "error">>({});
+  const [digestSendState, setDigestSendState] = React.useState<"idle" | "sending" | "sent" | "error">("idle");
   const [lastSendMessage, setLastSendMessage] = React.useState<string | null>(null);
   const [selfCheckLoading, setSelfCheckLoading] = React.useState(false);
   const [selfCheckMessage, setSelfCheckMessage] = React.useState<string | null>(null);
   const [syncLoading, setSyncLoading] = React.useState(false);
   const [syncMessage, setSyncMessage] = React.useState<string | null>(null);
-  const [listPage, setListPage] = React.useState(1);
-  const listPageSize = 6;
+  const [expandedSummaryIds, setExpandedSummaryIds] = React.useState<Record<string, boolean>>({});
 
   const getAccessToken = React.useCallback(async () => {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -172,10 +172,7 @@ export function DailyPaperModule() {
   const loadFeed = React.useCallback(async () => {
     try {
       const token = await getAccessToken();
-      const params = new URLSearchParams();
-      params.set("page", "1");
-      params.set("pageSize", "60");
-      const res = await fetch(`/api/papers/feed${params.toString() ? `?${params.toString()}` : ""}`, {
+      const res = await fetch("/api/papers/spotlight", {
         cache: "no-store",
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
@@ -191,7 +188,8 @@ export function DailyPaperModule() {
         setPaper(rows[0]);
       }
       setItems(rows.slice(1));
-      setListPage(1);
+      setExpandedSummaryIds({});
+      setDigestSendState("idle");
     } catch {
       return;
     }
@@ -201,53 +199,65 @@ export function DailyPaperModule() {
     void loadFeed();
   }, [loadFeed]);
 
-  const handleSendPdf = React.useCallback(
-    async (paperId: string) => {
-      setSendState((prev) => ({ ...prev, [paperId]: "sending" }));
-      try {
-        const token = await getAccessToken();
-        if (!token && !devBypassAuth) {
-          setSendState((prev) => ({ ...prev, [paperId]: "error" }));
-          return;
-        }
-        const res = await fetch("/api/send-pdf", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ paperId }),
-        });
-        const payload = (await res.json()) as SendApiResponse;
-        if (!res.ok) {
-          setLastSendMessage(payload.error ?? "发送失败，请重试");
-          setSendState((prev) => ({ ...prev, [paperId]: "error" }));
-          return;
-        }
-        setLastSendMessage(
-          payload.emailedTo ? `发送成功：${payload.emailedTo}` : "发送成功",
-        );
-        setSendState((prev) => ({ ...prev, [paperId]: "sent" }));
-      } catch {
-        setLastSendMessage("发送失败，请重试");
-        setSendState((prev) => ({ ...prev, [paperId]: "error" }));
+  const handleSendSpotlight = React.useCallback(async () => {
+    setDigestSendState("sending");
+    setLastSendMessage(null);
+    try {
+      const token = await getAccessToken();
+      if (!token && !devBypassAuth) {
+        setDigestSendState("error");
+        return;
       }
-    },
-    [devBypassAuth, getAccessToken],
-  );
+      const res = await fetch("/api/send-spotlight-email", {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      const payload = (await res.json()) as SendApiResponse;
+      if (!res.ok) {
+        setLastSendMessage(payload.error ?? "发送失败，请重试");
+        setDigestSendState("error");
+        return;
+      }
+      setLastSendMessage(
+        payload.emailedTo
+          ? `发送成功：${payload.emailedTo}（共 ${payload.count ?? 0} 篇）`
+          : "发送成功",
+      );
+      setDigestSendState("sent");
+    } catch {
+      setLastSendMessage("发送失败，请重试");
+      setDigestSendState("error");
+    }
+  }, [devBypassAuth, getAccessToken]);
 
-  const buttonLabel = (id: string, emailedAt: string | null) => {
-    const state = sendState[id];
-    if (state === "sending") return "发送中…";
-    if (state === "sent" || emailedAt) return "已发送";
-    if (state === "error") return "发送失败，重试";
-    return "发送全文到我的邮箱";
-  };
+  const digestButtonLabel = React.useCallback(() => {
+    if (digestSendState === "sending") return "发送中…";
+    if (digestSendState === "sent") return "已发送";
+    if (digestSendState === "error") return "发送失败，重试";
+    return "发送本期7篇到我的邮箱";
+  }, [digestSendState]);
 
-  const totalListPages = Math.max(1, Math.ceil(items.length / listPageSize));
-  const visibleItems = items.slice(
-    (listPage - 1) * listPageSize,
-    (listPage - 1) * listPageSize + listPageSize,
+  const previewSummary = React.useCallback((text: string) => {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (normalized.length <= 120) return normalized;
+    return `${normalized.slice(0, 120)}…`;
+  }, []);
+
+  const sourceTypeLabel = React.useCallback((sourceType: DailyPaperView["sourceType"]) => {
+    if (sourceType === "trending") return "🔥 全局热点";
+    if (sourceType === "serendipity") return "💡 跨界推荐";
+    return null;
+  }, []);
+
+  const toggleSummary = React.useCallback((paperId: string) => {
+    setExpandedSummaryIds((prev) => ({ ...prev, [paperId]: !prev[paperId] }));
+  }, []);
+
+  const isSummaryExpanded = React.useCallback(
+    (paperId: string) => Boolean(expandedSummaryIds[paperId]),
+    [expandedSummaryIds],
   );
 
   const handleSelfCheck = React.useCallback(async () => {
@@ -300,12 +310,6 @@ export function DailyPaperModule() {
       setSyncLoading(false);
     }
   }, [loadFeed]);
-
-  const sourceTypeLabel = React.useCallback((sourceType: DailyPaperView["sourceType"]) => {
-    if (sourceType === "trending") return "🔥 全局热点";
-    if (sourceType === "serendipity") return "💡 跨界推荐";
-    return null;
-  }, []);
 
   return (
     <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm hover:shadow-md transition-shadow flex flex-col h-full relative overflow-hidden">
@@ -370,16 +374,23 @@ export function DailyPaperModule() {
         {paper.recommendationReason ? (
           <p className="mb-2 text-xs text-slate-500">{paper.recommendationReason}</p>
         ) : null}
+        <button
+          type="button"
+          onClick={() => toggleSummary(paper.id)}
+          className="mt-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          {isSummaryExpanded(paper.id) ? "收起摘要" : "摘要"}
+        </button>
       </div>
 
       <div className="mb-4">
         <button
           type="button"
-          disabled={requiresLogin || !paper.isOpenAccess || sendState[paper.id] === "sending" || sendState[paper.id] === "sent" || Boolean(paper.pdfEmailedAt)}
-          onClick={() => handleSendPdf(paper.id)}
+          disabled={requiresLogin || digestSendState === "sending" || digestSendState === "sent"}
+          onClick={handleSendSpotlight}
           className="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-slate-800 transition-colors"
         >
-          {buttonLabel(paper.id, paper.pdfEmailedAt)}
+          {digestButtonLabel()}
         </button>
         {requiresLogin ? (
           <p className="mt-2 text-xs text-slate-500">
@@ -400,9 +411,6 @@ export function DailyPaperModule() {
         {lastSendMessage ? (
           <p className="mt-2 text-xs text-slate-600">{lastSendMessage}</p>
         ) : null}
-        {!paper.isOpenAccess ? (
-          <p className="mt-2 text-xs text-slate-500">当前文献非开放获取，暂不支持邮箱发送全文。</p>
-        ) : null}
       </div>
 
       <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 flex-grow z-10">
@@ -410,12 +418,21 @@ export function DailyPaperModule() {
           <div className="w-1.5 h-4 bg-teal-500 rounded-full"></div>
           中文摘要
         </h4>
-        <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-wrap">{paper.abstractZh}</p>
+        <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-wrap">
+          {isSummaryExpanded(paper.id) ? paper.abstractZh : previewSummary(paper.abstractZh)}
+        </p>
+        <div
+          className={`mt-2 overflow-hidden transition-all duration-300 ${
+            isSummaryExpanded(paper.id) ? "max-h-96 opacity-100" : "max-h-0 opacity-0"
+          }`}
+        >
+          <p className="text-xs text-slate-500">已展开完整摘要</p>
+        </div>
       </div>
 
       {items.length ? (
         <div className="mt-4 space-y-3">
-          {visibleItems.map((it) => (
+          {items.map((it) => (
             <div key={it.id} className="rounded-xl border border-slate-200 bg-white p-3">
               <a
                 href={it.pubmedUrl}
@@ -434,38 +451,19 @@ export function DailyPaperModule() {
                 </div>
                 <button
                   type="button"
-                  disabled={requiresLogin || !it.isOpenAccess || sendState[it.id] === "sending" || sendState[it.id] === "sent" || Boolean(it.pdfEmailedAt)}
-                  onClick={() => handleSendPdf(it.id)}
-                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50"
+                  onClick={() => toggleSummary(it.id)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                 >
-                  {buttonLabel(it.id, it.pdfEmailedAt)}
+                  {isSummaryExpanded(it.id) ? "收起摘要" : "摘要"}
                 </button>
               </div>
+              {isSummaryExpanded(it.id) ? (
+                <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 whitespace-pre-wrap">
+                  {it.abstractZh}
+                </div>
+              ) : null}
             </div>
           ))}
-          {totalListPages > 1 ? (
-            <div className="flex items-center justify-between pt-1">
-              <button
-                type="button"
-                disabled={listPage <= 1}
-                onClick={() => setListPage((p) => Math.max(1, p - 1))}
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50"
-              >
-                上一页
-              </button>
-              <div className="text-xs text-slate-500">
-                第 {listPage} / {totalListPages} 页（共 {items.length} 篇）
-              </div>
-              <button
-                type="button"
-                disabled={listPage >= totalListPages}
-                onClick={() => setListPage((p) => Math.min(totalListPages, p + 1))}
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50"
-              >
-                下一页
-              </button>
-            </div>
-          ) : null}
         </div>
       ) : null}
 

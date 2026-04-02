@@ -1,0 +1,149 @@
+import { NextResponse } from "next/server";
+import { Resend } from "resend";
+
+import {
+  getDevBypassSeedEmail,
+  getDevBypassUserId,
+  isDevBypassAuthEnabled,
+} from "@/lib/supabase/env";
+import { buildSpotlightPapers } from "@/lib/spotlight";
+import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { createUserSupabaseClient } from "@/lib/supabase/user";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function getBearerToken(req: Request) {
+  const auth = req.headers.get("authorization") ?? "";
+  const matched = auth.match(/^Bearer\s+(.+)$/i);
+  return matched?.[1];
+}
+
+function getResend() {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing required env: RESEND_API_KEY");
+  }
+  return new Resend(apiKey);
+}
+
+function getFromEmail() {
+  const from = process.env.RESEND_FROM_EMAIL;
+  if (!from) {
+    throw new Error("Missing required env: RESEND_FROM_EMAIL");
+  }
+  return from;
+}
+
+async function resolveBypassUserId(service: ReturnType<typeof createServiceSupabaseClient>) {
+  const direct = getDevBypassUserId();
+  if (direct) return direct;
+  const seedEmail = getDevBypassSeedEmail();
+  if (!seedEmail) return null;
+  const { data } = await service
+    .from("profiles")
+    .select("id")
+    .eq("contact_email", seedEmail)
+    .limit(1)
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
+function buildDigestHtml(items: Awaited<ReturnType<typeof buildSpotlightPapers>>["items"]) {
+  const rows = items
+    .map(
+      (item, index) => `
+      <div style="margin-bottom:20px;padding:14px;border:1px solid #e2e8f0;border-radius:10px;">
+        <div style="font-size:12px;color:#475569;margin-bottom:6px;">#${index + 1} · ${item.source_type}</div>
+        <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:8px;">${item.title}</div>
+        <div style="font-size:12px;color:#64748b;margin-bottom:8px;">${item.journal} · ${item.publication_date ?? "N/A"}</div>
+        <div style="margin-bottom:8px;"><a href="${item.pubmed_url}" target="_blank" rel="noreferrer">查看 PubMed 原文</a></div>
+        <div style="font-size:13px;line-height:1.7;color:#334155;white-space:pre-wrap;">${item.abstract_zh ?? "中文摘要待生成。"}</div>
+      </div>
+    `,
+    )
+    .join("");
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;">
+      <h2 style="margin-bottom:8px;">今日精选 7 篇文献</h2>
+      <p style="color:#64748b;margin-bottom:16px;">已按“5篇相关 + 1篇热点 + 1篇拓宽边界”整合。</p>
+      ${rows}
+    </div>
+  `;
+}
+
+export async function POST(req: Request) {
+  const token = getBearerToken(req);
+  const devBypass = isDevBypassAuthEnabled();
+  const service = createServiceSupabaseClient();
+
+  let user: { id: string; email?: string | null } | null = null;
+  if (token) {
+    const userClient = createUserSupabaseClient(token);
+    const {
+      data: { user: authUser },
+      error,
+    } = await userClient.auth.getUser();
+    if (error || !authUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    user = { id: authUser.id, email: authUser.email };
+  } else if (devBypass) {
+    const userId = await resolveBypassUserId(service);
+    if (userId) {
+      user = { id: userId, email: null };
+    }
+  }
+
+  if (!user) {
+    return NextResponse.json(
+      { error: token ? "Unauthorized" : "Missing bearer token" },
+      { status: 401 },
+    );
+  }
+
+  const { data: profile, error: profileErr } = await service
+    .from("profiles")
+    .select("contact_email")
+    .eq("id", user.id)
+    .single();
+  if (profileErr) {
+    return NextResponse.json({ error: `Profile query failed: ${profileErr.message}` }, { status: 500 });
+  }
+
+  const seedEmail = getDevBypassSeedEmail();
+  const devRecipient =
+    process.env.DEV_BYPASS_RECIPIENT_EMAIL?.trim() ||
+    process.env.NCBI_EMAIL?.trim() ||
+    seedEmail;
+  const emailTo = (devBypass && devRecipient
+    ? devRecipient
+    : profile?.contact_email || user.email || "").trim();
+  if (!emailTo) {
+    return NextResponse.json({ error: "No contact email found for this user" }, { status: 400 });
+  }
+
+  const { items } = await buildSpotlightPapers({ userId: user.id, service });
+  if (!items.length) {
+    return NextResponse.json({ error: "No spotlight papers available" }, { status: 400 });
+  }
+
+  const resend = getResend();
+  const from = getFromEmail();
+  const html = buildDigestHtml(items);
+  const { error: mailErr } = await resend.emails.send({
+    from,
+    to: emailTo,
+    subject: "今日精选 7 篇文献（含中文摘要）",
+    html,
+  });
+  if (mailErr) {
+    return NextResponse.json({ error: `Email sending failed: ${mailErr.message}` }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    emailedTo: emailTo,
+    count: items.length,
+  });
+}

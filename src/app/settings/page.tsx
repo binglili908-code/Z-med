@@ -10,6 +10,9 @@ type JournalItem = {
   aliases: string[] | null;
   tier: string | null;
   weight: number | null;
+  impact_factor: number | null;
+  jcr_quartile: string | null;
+  cas_zone: string | null;
   is_active: boolean | null;
 };
 
@@ -33,6 +36,9 @@ type SubjectSearchResult = {
     journal_name: string;
     tier: "top" | "core" | "emerging";
     weight: number;
+    impact_factor: number;
+    jcr_quartile: string;
+    cas_zone: string;
   }[];
 };
 
@@ -161,11 +167,24 @@ export default function SettingsPage() {
   }, [customJournals, keywords, selectedJournalIds, token, topJournalsOnly]);
 
   const groupedJournals = React.useMemo(() => {
-    const top = journals.filter((j) => (j.tier ?? "").toLowerCase() === "top");
-    const core = journals.filter((j) => (j.tier ?? "").toLowerCase() === "core");
-    const emerging = journals.filter((j) => (j.tier ?? "").toLowerCase() === "emerging");
+    const byImpactDesc = (a: JournalItem, b: JournalItem) =>
+      Number(b.impact_factor ?? 0) - Number(a.impact_factor ?? 0);
+    const top = journals
+      .filter((j) => (j.tier ?? "").toLowerCase() === "top")
+      .sort(byImpactDesc);
+    const core = journals
+      .filter((j) => (j.tier ?? "").toLowerCase() === "core")
+      .sort(byImpactDesc);
+    const emerging = journals
+      .filter((j) => (j.tier ?? "").toLowerCase() === "emerging")
+      .sort(byImpactDesc);
     return { top, core, emerging };
   }, [journals]);
+
+  const formatIf = React.useCallback((value: number | null | undefined) => {
+    if (!value || value <= 0) return "—";
+    return Number(value).toFixed(2).replace(/\.00$/, "");
+  }, []);
 
   React.useEffect(() => {
     if (!subjectQuery.trim()) {
@@ -305,6 +324,9 @@ export default function SettingsPage() {
                       >
                         {(journal.tier ?? "emerging").toUpperCase()}
                       </span>
+                      <span className="mt-1 block text-xs opacity-80">
+                        IF: {formatIf(journal.impact_factor)} | {journal.jcr_quartile || "—"} | {journal.cas_zone || "—"}
+                      </span>
                     </span>
                   </label>
                 );
@@ -345,6 +367,9 @@ export default function SettingsPage() {
                         <span>
                           <span className="block font-semibold">{journal.journal_name || "Unknown Journal"}</span>
                           {aliasText ? <span className="block text-xs opacity-80">{aliasText}</span> : null}
+                          <span className="block text-xs opacity-80">
+                            IF: {formatIf(journal.impact_factor)} | {journal.jcr_quartile || "—"} | {journal.cas_zone || "—"}
+                          </span>
                         </span>
                       </label>
                     );
