@@ -34,11 +34,17 @@ async function resolveBypassUserId(service: ReturnType<typeof createServiceSupab
 }
 
 function buildDigestHtml(items: Awaited<ReturnType<typeof buildSpotlightPapers>>["items"]) {
+  const baseUrl = process.env.APP_BASE_URL?.trim() || "https://trae73v9r64b.vercel.app";
+  const logoUrl = `${baseUrl}/api/brand/logo`;
   const rows = items
     .map(
       (item, index) => `
       <div style="margin-bottom:20px;padding:14px;border:1px solid #e2e8f0;border-radius:10px;">
-        <div style="font-size:12px;color:#475569;margin-bottom:6px;">#${index + 1} · ${item.source_type}</div>
+        <div style="margin-bottom:6px;">
+          <span style="display:inline-block;font-size:11px;color:#0f172a;background:#e2e8f0;border-radius:6px;padding:3px 8px;margin-right:6px;">#${index + 1}</span>
+          <span style="display:inline-block;font-size:11px;color:#0369a1;background:#e0f2fe;border:1px solid #bae6fd;border-radius:6px;padding:3px 8px;margin-right:6px;">${item.source_type}</span>
+          <span style="display:inline-block;font-size:11px;color:#065f46;background:#d1fae5;border:1px solid #a7f3d0;border-radius:6px;padding:3px 8px;">${(item.quality_tier ?? "").toUpperCase()}</span>
+        </div>
         <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:8px;">${item.title}</div>
         <div style="font-size:12px;color:#64748b;margin-bottom:8px;">${item.journal} · ${item.publication_date ?? "N/A"}</div>
         <div style="margin-bottom:8px;"><a href="${item.pubmed_url}" target="_blank" rel="noreferrer">查看 PubMed 原文</a></div>
@@ -49,9 +55,13 @@ function buildDigestHtml(items: Awaited<ReturnType<typeof buildSpotlightPapers>>
     .join("");
   return `
     <div style="font-family:Arial,sans-serif;line-height:1.6;">
-      <h2 style="margin-bottom:8px;">今日精选 7 篇文献</h2>
-      <p style="color:#64748b;margin-bottom:16px;">已按“5篇相关 + 1篇热点 + 1篇拓宽边界”整合。</p>
+      <div style="display:flex;align-items:center;margin-bottom:12px;">
+        <img src="${logoUrl}" alt="Z-Lab" style="height:28px;margin-right:10px;border-radius:6px;" />
+        <div style="font-size:18px;font-weight:800;color:#0f172a;">Z-Lab 医学前沿精选</div>
+      </div>
+      <p style="color:#475569;margin:4px 0 16px 0;font-size:13px;">这是 Z‑Lab AI 为您精选的本期 7 篇文献（5 篇相关 + 1 篇热点 + 1 篇拓边）。</p>
       ${rows}
+      <div style="margin-top:16px;font-size:11px;color:#64748b;">如需调整订阅偏好，请前往 Z‑Lab 设置页面。</div>
     </div>
   `;
 }
