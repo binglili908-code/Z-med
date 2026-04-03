@@ -220,7 +220,7 @@ function buildQueryFromKeywords(keywords: string[]) {
   const medJoined = medTerms
     .map((k) => `"${k.replace(/"/g, "")}"[Title/Abstract]`)
     .join(" OR ");
-  return `((${aiJoined}) AND (${medJoined})) AND ("last 7 days"[PDat])`;
+  return `((${aiJoined}) AND (${medJoined})) AND ("last 7 days"[EDat])`;
 }
 
 function buildTopJournalQuery(journalTerms: string[]) {
@@ -232,7 +232,7 @@ function buildTopJournalQuery(journalTerms: string[]) {
   const aiJoined = dedupeTerms(AI_TERMS)
     .map((k) => `"${k.replace(/"/g, "")}"[Title/Abstract]`)
     .join(" OR ");
-  return `((${journalJoined}) AND (${aiJoined})) AND ("last 30 days"[PDat])`;
+  return `((${journalJoined}) AND (${aiJoined})) AND ("last 30 days"[EDat])`;
 }
 
 function buildTopJournalBackfillQuery(journalTerms: string[], fromDate: string, toDate: string) {
@@ -743,9 +743,9 @@ export async function runPubmedSyncJob() {
 
   const keywords = toKeywordList((profileRows ?? []) as ProfileKeywordRow[]);
   const broadQuery = buildQueryFromKeywords(keywords);
-  const broadIds = await pubmedEsearch(broadQuery, 60);
+  const broadIds = await pubmedEsearch(broadQuery, 200);
   const topJournalQuery = buildTopJournalQuery(topJournalTerms);
-  const topJournalIds = topJournalQuery ? await pubmedEsearch(topJournalQuery, 120) : [];
+  const topJournalIds = topJournalQuery ? await pubmedEsearch(topJournalQuery, 300) : [];
   const ids = dedupeIdList([...topJournalIds, ...broadIds]);
 
   const summaryChunks = chunk(ids, 20);

@@ -33,7 +33,7 @@ function buildDailyQuery() {
     '"artificial intelligence"[Title/Abstract] OR "machine learning"[Title/Abstract] OR "deep learning"[Title/Abstract] OR "foundation model"[Title/Abstract] OR "large language model"[Title/Abstract]';
   const med =
     '"medicine"[MeSH Terms] OR clinical[Title/Abstract] OR radiology[Title/Abstract] OR pathology[Title/Abstract] OR "electronic health record"[Title/Abstract] OR genomics[Title/Abstract]';
-  const recency = '"last 7 days"[PDat]';
+  const recency = '"last 7 days"[EDat]';
   return `(${ai}) AND (${med}) AND (${recency})`;
 }
 
@@ -123,7 +123,7 @@ async function esummaryPubmed(ids: string[]): Promise<PubmedPaper[]> {
 export async function getDailyPubmedPapers(
   opts: { limit?: number; query?: string } = {},
 ): Promise<DailyPapersResult> {
-  const limit = Math.max(1, Math.min(50, opts.limit ?? 10));
+  const limit = Math.max(1, Math.min(200, opts.limit ?? 10));
   const query = (opts.query ?? buildDailyQuery()).trim();
 
   try {
