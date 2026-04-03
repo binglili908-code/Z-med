@@ -167,7 +167,9 @@ export function DailyPaperModule() {
   const [devBypassAuth, setDevBypassAuth] = React.useState(false);
   const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(null);
   const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(null);
+  const [hasByok, setHasByok] = React.useState(false);
   const [digestSendState, setDigestSendState] = React.useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [translateState, setTranslateState] = React.useState<Record<string, "idle" | "translating" | "done" | "error">>({});
   const [lastSendMessage, setLastSendMessage] = React.useState<string | null>(null);
   const [selfCheckLoading, setSelfCheckLoading] = React.useState(false);
   const [selfCheckMessage, setSelfCheckMessage] = React.useState<string | null>(null);
@@ -211,8 +213,31 @@ export function DailyPaperModule() {
       setBrowseTotalPages(1);
       setExpandedSummaryIds({});
       setDigestSendState("idle");
+      setTranslateState({});
     } catch {
       return;
+    }
+  }, [getAccessToken]);
+
+  const loadByokStatus = React.useCallback(async () => {
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setHasByok(false);
+        return;
+      }
+      const res = await fetch("/api/user/ai-settings", {
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        setHasByok(false);
+        return;
+      }
+      const json = (await res.json()) as { apiKeyMasked?: string | null; ai_digest_enabled?: boolean };
+      setHasByok(Boolean(json.apiKeyMasked) && Boolean(json.ai_digest_enabled ?? true));
+    } catch {
+      setHasByok(false);
     }
   }, [getAccessToken]);
 
@@ -268,6 +293,10 @@ export function DailyPaperModule() {
     }
     void loadMetrics();
   }, []);
+
+  React.useEffect(() => {
+    void loadByokStatus();
+  }, [loadByokStatus]);
 
   const handleSendSpotlight = React.useCallback(async () => {
     setDigestSendState("sending");
@@ -397,6 +426,64 @@ export function DailyPaperModule() {
     await loadBrowse(1);
   }, [loadBrowse]);
 
+  const applyTranslatedResult = React.useCallback((paperId: string, titleZh: string, abstractZh: string) => {
+    setPaper((prev) =>
+      prev.id === paperId
+        ? { ...prev, titleZh: titleZh || prev.titleZh, abstractZh: abstractZh || prev.abstractZh }
+        : prev,
+    );
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === paperId ? { ...it, titleZh: titleZh || it.titleZh, abstractZh: abstractZh || it.abstractZh } : it,
+      ),
+    );
+    setBrowseItems((prev) =>
+      prev.map((it) =>
+        it.id === paperId ? { ...it, titleZh: titleZh || it.titleZh, abstractZh: abstractZh || it.abstractZh } : it,
+      ),
+    );
+  }, []);
+
+  const handleTranslateWithMine = React.useCallback(
+    async (paperId: string) => {
+      const target =
+        paper.id === paperId
+          ? paper
+          : items.find((x) => x.id === paperId) ?? browseItems.find((x) => x.id === paperId);
+      if (target?.titleZh && target.abstractZh) {
+        setLastSendMessage("该文献已有中文翻译，已直接展示。");
+        setTranslateState((prev) => ({ ...prev, [paperId]: "done" }));
+        return;
+      }
+      setTranslateState((prev) => ({ ...prev, [paperId]: "translating" }));
+      try {
+        const token = await getAccessToken();
+        if (!token) {
+          setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
+          setLastSendMessage("请先登录再使用我的模型翻译。");
+          return;
+        }
+        const res = await fetch(`/api/papers/${paperId}/translate`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = (await res.json()) as { error?: string; title_zh?: string; abstract_zh?: string };
+        if (!res.ok) {
+          setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
+          setLastSendMessage(payload.error ?? "翻译失败");
+          return;
+        }
+        applyTranslatedResult(paperId, payload.title_zh ?? "", payload.abstract_zh ?? "");
+        setTranslateState((prev) => ({ ...prev, [paperId]: "done" }));
+        setLastSendMessage("已使用你的模型完成翻译。");
+      } catch {
+        setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
+        setLastSendMessage("翻译请求失败");
+      }
+    },
+    [applyTranslatedResult, browseItems, getAccessToken, items, paper],
+  );
+
   return (
     <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm hover:shadow-md transition-shadow flex flex-col h-full relative overflow-hidden">
       <div className="absolute top-0 right-0 w-64 h-64 bg-teal-50 rounded-full blur-3xl -mr-20 -mt-20 opacity-50 pointer-events-none"></div>
@@ -494,6 +581,16 @@ export function DailyPaperModule() {
         >
           {isSummaryExpanded(paper.id) ? "收起摘要" : "摘要"}
         </button>
+        {hasByok ? (
+          <button
+            type="button"
+            onClick={() => void handleTranslateWithMine(paper.id)}
+            disabled={translateState[paper.id] === "translating"}
+            className="ml-2 mt-1 rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {translateState[paper.id] === "translating" ? "翻译中..." : "用我的模型翻译"}
+          </button>
+        ) : null}
       </div>
 
       <div className="mb-4">
@@ -572,6 +669,16 @@ export function DailyPaperModule() {
                 >
                   {isSummaryExpanded(it.id) ? "收起摘要" : "摘要"}
                 </button>
+                {hasByok ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleTranslateWithMine(it.id)}
+                    disabled={translateState[it.id] === "translating"}
+                    className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {translateState[it.id] === "translating" ? "翻译中..." : "用我的模型翻译"}
+                  </button>
+                ) : null}
               </div>
               {isSummaryExpanded(it.id) ? (
                 <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 whitespace-pre-wrap">
@@ -633,6 +740,16 @@ export function DailyPaperModule() {
                     >
                       {isSummaryExpanded(`browse-${it.id}`) ? "收起摘要" : "摘要"}
                     </button>
+                    {hasByok ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleTranslateWithMine(it.id)}
+                        disabled={translateState[it.id] === "translating"}
+                        className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        {translateState[it.id] === "translating" ? "翻译中..." : "用我的模型翻译"}
+                      </button>
+                    ) : null}
                   </div>
                   {isSummaryExpanded(`browse-${it.id}`) ? (
                     <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 whitespace-pre-wrap">

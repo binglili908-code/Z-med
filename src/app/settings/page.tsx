@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
+import { PROVIDER_CONFIG, type ByokProvider } from "@/lib/byok-config";
 
 type JournalItem = {
   id: string;
@@ -42,6 +43,13 @@ type SubjectSearchResult = {
   }[];
 };
 
+type AiSettingsResponse = {
+  provider: string | null;
+  model: string | null;
+  apiKeyMasked: string | null;
+  ai_digest_enabled: boolean;
+};
+
 export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
   const [email, setEmail] = React.useState<string | null>(null);
@@ -59,6 +67,14 @@ export default function SettingsPage() {
   const [topJournalsOnly, setTopJournalsOnly] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
+  const [aiProvider, setAiProvider] = React.useState<ByokProvider>("deepseek");
+  const [aiModel, setAiModel] = React.useState("deepseek-chat");
+  const [aiKeyInput, setAiKeyInput] = React.useState("");
+  const [aiKeyMasked, setAiKeyMasked] = React.useState<string | null>(null);
+  const [aiDigestEnabled, setAiDigestEnabled] = React.useState(true);
+  const [aiSaving, setAiSaving] = React.useState(false);
+  const [aiTestState, setAiTestState] = React.useState<"idle" | "testing" | "ok" | "failed">("idle");
+  const [aiTestMessage, setAiTestMessage] = React.useState<string | null>(null);
 
   const supabase = React.useMemo(() => {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -80,9 +96,13 @@ export default function SettingsPage() {
       setToken(session?.access_token ?? null);
       if (session?.access_token) {
         try {
-          const [journalRes, subRes] = await Promise.all([
+          const [journalRes, subRes, aiRes] = await Promise.all([
             fetch("/api/journal-quality", { cache: "no-store" }),
             fetch("/api/user/subscription", {
+              cache: "no-store",
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            }),
+            fetch("/api/user/ai-settings", {
               cache: "no-store",
               headers: { Authorization: `Bearer ${session.access_token}` },
             }),
@@ -97,6 +117,17 @@ export default function SettingsPage() {
             setCustomJournals(subJson.custom_journals ?? []);
             setKeywords(subJson.keywords ?? []);
             setTopJournalsOnly(Boolean(subJson.top_journals_only));
+          }
+          if (aiRes.ok) {
+            const aiJson = (await aiRes.json()) as AiSettingsResponse;
+            if (aiJson.provider && aiJson.provider in PROVIDER_CONFIG) {
+              const p = aiJson.provider as ByokProvider;
+              setAiProvider(p);
+              const modelExists = PROVIDER_CONFIG[p].models.some((m) => m.value === aiJson.model);
+              setAiModel(modelExists ? (aiJson.model as string) : PROVIDER_CONFIG[p].models[0].value);
+            }
+            setAiKeyMasked(aiJson.apiKeyMasked);
+            setAiDigestEnabled(Boolean(aiJson.ai_digest_enabled));
           }
         } catch {
           setMessage("订阅配置加载失败，请刷新后重试。");
@@ -239,6 +270,108 @@ export default function SettingsPage() {
       clearTimeout(timer);
     };
   }, [subjectQuery]);
+
+  const providerModels = React.useMemo(() => PROVIDER_CONFIG[aiProvider].models, [aiProvider]);
+
+  const saveAiSettings = React.useCallback(async () => {
+    if (!token) return;
+    setAiSaving(true);
+    setAiTestMessage(null);
+    try {
+      const res = await fetch("/api/user/ai-settings", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          provider: aiProvider,
+          model: aiModel,
+          apiKey: aiKeyInput.trim() || undefined,
+          ai_digest_enabled: aiDigestEnabled,
+          clearKey: false,
+        }),
+      });
+      const payload = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        setAiTestMessage(payload.error ?? "保存失败");
+        return;
+      }
+      if (aiKeyInput.trim()) {
+        setAiKeyMasked(`••••${aiKeyInput.trim().slice(-4)}`);
+      }
+      setAiKeyInput("");
+      setAiTestMessage("AI 配置已保存");
+    } catch {
+      setAiTestMessage("保存失败，请重试");
+    } finally {
+      setAiSaving(false);
+    }
+  }, [aiDigestEnabled, aiKeyInput, aiModel, aiProvider, token]);
+
+  const clearAiKey = React.useCallback(async () => {
+    if (!token) return;
+    setAiSaving(true);
+    try {
+      const res = await fetch("/api/user/ai-settings", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          provider: aiProvider,
+          model: aiModel,
+          clearKey: true,
+          ai_digest_enabled: aiDigestEnabled,
+        }),
+      });
+      if (res.ok) {
+        setAiKeyMasked(null);
+        setAiKeyInput("");
+        setAiTestMessage("已清除 API Key");
+      }
+    } finally {
+      setAiSaving(false);
+    }
+  }, [aiDigestEnabled, aiModel, aiProvider, token]);
+
+  const testAiConnection = React.useCallback(async () => {
+    if (!token) return;
+    const candidateKey = aiKeyInput.trim();
+    if (!candidateKey) {
+      setAiTestState("failed");
+      setAiTestMessage("请先输入 API Key 再测试连接");
+      return;
+    }
+    setAiTestState("testing");
+    setAiTestMessage(null);
+    try {
+      const res = await fetch("/api/user/ai-settings/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          provider: aiProvider,
+          model: aiModel,
+          apiKey: candidateKey,
+        }),
+      });
+      const payload = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        setAiTestState("failed");
+        setAiTestMessage(`✗ ${payload.error ?? "连接失败"}`);
+        return;
+      }
+      setAiTestState("ok");
+      setAiTestMessage("✓ 连接成功");
+    } catch {
+      setAiTestState("failed");
+      setAiTestMessage("✗ 网络异常");
+    }
+  }, [aiKeyInput, aiModel, aiProvider, token]);
 
   const selectedSubject = React.useMemo(
     () => subjectResults.find((item) => item.id === selectedSubjectId) ?? null,
@@ -529,6 +662,118 @@ export default function SettingsPage() {
           </button>
           {message ? <p className="mt-2 text-sm text-slate-600">{message}</p> : null}
         </div>
+      </section>
+
+      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6">
+        <h2 className="text-xl font-bold text-slate-900">AI 模型配置</h2>
+        <p className="mt-2 text-sm text-slate-600">配置你自己的模型 Key，用于“用我的模型翻译”等能力。</p>
+
+        <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="text-sm font-semibold text-slate-900">模型提供商</label>
+            <select
+              value={aiProvider}
+              onChange={(e) => {
+                const p = e.target.value as ByokProvider;
+                setAiProvider(p);
+                setAiModel(PROVIDER_CONFIG[p].models[0].value);
+              }}
+              className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              {Object.keys(PROVIDER_CONFIG).map((provider) => (
+                <option key={provider} value={provider}>
+                  {provider}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm font-semibold text-slate-900">模型</label>
+            <select
+              value={aiModel}
+              onChange={(e) => setAiModel(e.target.value)}
+              className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              {providerModels.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <label className="text-sm font-semibold text-slate-900">API Key</label>
+          <input
+            type="password"
+            value={aiKeyInput}
+            onChange={(e) => setAiKeyInput(e.target.value)}
+            placeholder={aiKeyMasked ? `已配置：${aiKeyMasked}` : "输入 API Key"}
+            className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          />
+          <div className="mt-2 text-xs text-slate-500">
+            当前状态：{aiKeyMasked ? `已配置（${aiKeyMasked}）` : "未配置"}
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={testAiConnection}
+            disabled={aiTestState === "testing"}
+            className="rounded-xl border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900 disabled:opacity-50"
+          >
+            {aiTestState === "testing" ? "测试中..." : "测试连接"}
+          </button>
+          <button
+            type="button"
+            onClick={clearAiKey}
+            disabled={aiSaving}
+            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50"
+          >
+            清除 Key
+          </button>
+          <button
+            type="button"
+            onClick={saveAiSettings}
+            disabled={aiSaving}
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            {aiSaving ? "保存中..." : "保存 AI 配置"}
+          </button>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">启用 AI 功能</p>
+            <p className="text-xs text-slate-500">关闭后将不使用自定义模型进行翻译能力。</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAiDigestEnabled((v) => !v)}
+            className={`relative h-7 w-12 rounded-full transition-colors ${
+              aiDigestEnabled ? "bg-slate-900" : "bg-slate-300"
+            }`}
+          >
+            <span
+              className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-all ${
+                aiDigestEnabled ? "right-1" : "left-1"
+              }`}
+            />
+          </button>
+        </div>
+
+        {aiTestMessage ? (
+          <p
+            className={`mt-3 text-sm ${
+              aiTestState === "ok" ? "text-emerald-600" : aiTestState === "failed" ? "text-rose-600" : "text-slate-600"
+            }`}
+          >
+            {aiTestMessage}
+          </p>
+        ) : null}
       </section>
     </main>
   );
