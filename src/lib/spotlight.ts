@@ -3,6 +3,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/service";
 type DbPaper = {
   id: string;
   title: string;
+  title_zh?: string | null;
   abstract: string | null;
   abstract_zh: string | null;
   journal: string | null;
@@ -26,6 +27,7 @@ export type SpotlightSourceType = "precision" | "trending" | "serendipity";
 export type SpotlightPaper = {
   id: string;
   title: string;
+  title_zh: string | null;
   journal: string;
   publication_date: string | null;
   quality_score: number;
@@ -58,6 +60,7 @@ function includesAnyKeyword(paper: DbPaper, keywords: string[]) {
   if (!keywords.length) return true;
   const text = [
     paper.title ?? "",
+    paper.title_zh ?? "",
     paper.abstract ?? "",
     paper.abstract_zh ?? "",
     paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
@@ -76,6 +79,7 @@ function toPaperOutput(
   return {
     id: paper.id,
     title: paper.title,
+    title_zh: paper.title_zh ?? null,
     journal: paper.journal ?? "PubMed",
     publication_date: paper.publication_date,
     quality_score: Number(paper.quality_score ?? 0),
@@ -143,7 +147,7 @@ export async function buildSpotlightPapers(params: {
   let query = service
     .from("papers")
     .select(
-      "id,title,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
+      "id,title,title_zh,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
     )
     .eq("is_ai_med", true);
 

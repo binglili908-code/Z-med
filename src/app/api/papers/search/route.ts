@@ -12,6 +12,7 @@ function clamp(n: number, min: number, max: number) {
 type SearchPaperRow = {
   id: string;
   title: string | null;
+  title_zh?: string | null;
   abstract: string | null;
   abstract_zh: string | null;
   journal: string | null;
@@ -40,6 +41,7 @@ function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
   if (!terms.length) return true;
   const haystack = [
     paper.title ?? "",
+    paper.title_zh ?? "",
     paper.abstract ?? "",
     paper.abstract_zh ?? "",
   ]
@@ -65,7 +67,7 @@ export async function GET(req: Request) {
   let query = supabase
     .from("papers")
     .select(
-      "id,title,abstract,abstract_zh,journal,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms",
+      "id,title,title_zh,abstract,abstract_zh,journal,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms",
     )
     .eq("is_ai_med", true);
 

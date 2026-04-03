@@ -6,6 +6,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/service";
 type PaperRow = {
   id: string;
   title: string;
+  title_zh?: string | null;
   journal: string | null;
   abstract: string | null;
   quality_score: number | null;
@@ -110,6 +111,45 @@ async function callDeepSeekAnalysis(paper: PaperRow) {
   return content.trim();
 }
 
+async function callDeepSeekTitle(title: string, journal: string | null) {
+  const apiKey = getDeepSeekApiKey();
+  if (!apiKey) {
+    throw new Error("Missing DEEPSEEK_API_KEY");
+  }
+  const system = `你是一位专业的医学翻译。请将下面英文论文标题翻译为准确、简洁的中文标题。仅输出中文标题，不要添加任何说明或标记。`;
+  const user = `期刊：${journal ?? "Unknown"}
+英文标题：${title}`;
+  const res = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: MODEL_NAME,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: 0.1,
+    }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`DeepSeek title translate failed: ${txt.slice(0, 200)}`);
+  }
+  const json = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const content =
+    json.choices?.[0]?.message?.content?.trim() ?? "";
+  if (!content) {
+    throw new Error("DeepSeek title response has no content");
+  }
+  return content.trim();
+}
+
 async function ensurePlatformQueue(supabase: ReturnType<typeof createServiceSupabaseClient>) {
   const { data: candidates, error: candidateErr } = await supabase
     .from("papers")
@@ -198,7 +238,7 @@ export async function runAiAnalysisCronJob() {
   const paperIds = jobs.map((j) => j.paper_id);
   const { data: papers, error: paperErr } = await supabase
     .from("papers")
-    .select("id,title,journal,abstract,quality_score,abstract_zh")
+    .select("id,title,journal,abstract,quality_score,abstract_zh,title_zh")
     .in("id", paperIds);
   if (paperErr) {
     throw new Error(`Load papers for AI jobs failed: ${paperErr.message}`);
@@ -229,14 +269,32 @@ export async function runAiAnalysisCronJob() {
 
     try {
       const translated = await callDeepSeekAnalysis(paper);
+      let titleZh: string | null = null;
+      try {
+        titleZh = await callDeepSeekTitle(paper.title, paper.journal);
+      } catch {
+        titleZh = null;
+      }
 
-      const { error: updatePaperErr } = await supabase
+      const updatePayload: Record<string, unknown> = {
+        abstract_zh: translated,
+        updated_at: new Date().toISOString(),
+      };
+      if (titleZh) {
+        updatePayload.title_zh = titleZh;
+      }
+      let { error: updatePaperErr } = await supabase
         .from("papers")
-        .update({
+        .update(updatePayload)
+        .eq("id", paper.id);
+      if (updatePaperErr && titleZh) {
+        const retryPayload: Record<string, unknown> = {
           abstract_zh: translated,
           updated_at: new Date().toISOString(),
-        })
-        .eq("id", paper.id);
+        };
+        const retry = await supabase.from("papers").update(retryPayload).eq("id", paper.id);
+        updatePaperErr = retry.error;
+      }
       if (updatePaperErr) {
         throw new Error(updatePaperErr.message);
       }

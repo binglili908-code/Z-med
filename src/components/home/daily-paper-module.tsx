@@ -9,6 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 type FeedPaper = {
   id: string;
   title: string;
+  title_zh?: string | null;
   journal: string;
   publication_date: string | null;
   abstract_zh: string | null;
@@ -74,6 +75,7 @@ type SyncApiResponse = {
 type DailyPaperView = {
   id: string;
   title: string;
+  titleZh: string | null;
   journal: string;
   date: string;
   qualityScore: number | null;
@@ -110,6 +112,7 @@ function toDailyPaperView(p: FeedPaper): DailyPaperView {
   return {
     id: p.id,
     title: p.title,
+    titleZh: p.title_zh?.trim() ? p.title_zh.trim() : null,
     journal,
     date,
     qualityScore: p.quality_score ?? null,
@@ -128,6 +131,7 @@ function toDailyPaperView(p: FeedPaper): DailyPaperView {
 const fallbackPaper: DailyPaperView = {
   id: "fallback",
   title: "正在获取今日最新文献…",
+  titleZh: null,
   journal: "PubMed",
   date: "Today",
   qualityScore: null,
@@ -424,6 +428,9 @@ export function DailyPaperModule() {
         >
           {paper.title}
         </a>
+        {paper.titleZh ? (
+          <div className="mb-2 text-sm font-medium text-slate-600">{paper.titleZh}</div>
+        ) : null}
         {paper.recommendationReason ? (
           <p className="mb-2 text-xs text-slate-500">{paper.recommendationReason}</p>
         ) : null}
@@ -495,6 +502,9 @@ export function DailyPaperModule() {
               >
                 {it.title}
               </a>
+                {it.titleZh ? (
+                  <div className="mt-1 text-xs font-medium text-slate-600">{it.titleZh}</div>
+                ) : null}
               <div className="mt-2 flex items-center justify-between gap-3">
                 <div className="text-xs text-slate-500">
                   {it.journal} · {it.date}

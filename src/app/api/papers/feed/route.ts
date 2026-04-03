@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 type DbPaper = {
   id: string;
   title: string;
+  title_zh?: string | null;
   abstract: string | null;
   abstract_zh: string | null;
   journal: string | null;
@@ -58,6 +59,7 @@ function matchesAnyKeyword(paper: DbPaper, keywords: string[]) {
   if (!keywords.length) return true;
   const text = [
     paper.title ?? "",
+    paper.title_zh ?? "",
     paper.abstract ?? "",
     paper.abstract_zh ?? "",
     paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
@@ -146,7 +148,7 @@ export async function GET(req: Request) {
   let query = service
     .from("papers")
     .select(
-      "id,title,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
+      "id,title,title_zh,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
     )
     .eq("is_ai_med", true);
 
@@ -195,6 +197,7 @@ export async function GET(req: Request) {
   const mapped = paperRows.map((p) => ({
     id: p.id,
     title: p.title,
+    title_zh: p.title_zh ?? null,
     journal: p.journal ?? "PubMed",
     publication_date: p.publication_date,
     quality_score: Number(p.quality_score ?? 0),
