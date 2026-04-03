@@ -149,14 +149,6 @@ const fallbackPaper: DailyPaperView = {
 export function DailyPaperModule() {
   const [paper, setPaper] = React.useState<DailyPaperView>(fallbackPaper);
   const [items, setItems] = React.useState<DailyPaperView[]>([]);
-  const [metrics, setMetrics] = React.useState<{
-    totalCandidates: number;
-    intercepted: number;
-    retained: number;
-    retentionRate: number;
-    savedHours: number;
-    windowDays: number;
-  } | null>(null);
   const [browseEnabled, setBrowseEnabled] = React.useState(false);
   const [browseItems, setBrowseItems] = React.useState<DailyPaperView[]>([]);
   const [browsePage, setBrowsePage] = React.useState(1);
@@ -272,27 +264,6 @@ export function DailyPaperModule() {
   React.useEffect(() => {
     void loadFeed();
   }, [loadFeed]);
-
-  React.useEffect(() => {
-    async function loadMetrics() {
-      try {
-        const res = await fetch("/api/metrics/platform", { cache: "no-store" });
-        if (!res.ok) return;
-        const json = (await res.json()) as {
-          totalCandidates: number;
-          intercepted: number;
-          retained: number;
-          retentionRate: number;
-          savedHours: number;
-          windowDays: number;
-        };
-        setMetrics(json);
-      } catch {
-        return;
-      }
-    }
-    void loadMetrics();
-  }, []);
 
   React.useEffect(() => {
     void loadByokStatus();
@@ -487,30 +458,6 @@ export function DailyPaperModule() {
   return (
     <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm hover:shadow-md transition-shadow flex flex-col h-full relative overflow-hidden">
       <div className="absolute top-0 right-0 w-64 h-64 bg-teal-50 rounded-full blur-3xl -mr-20 -mt-20 opacity-50 pointer-events-none"></div>
-
-      {metrics ? (
-        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-xl border border-slate-200 bg-white p-3">
-            <div className="text-[11px] text-slate-500">近{metrics.windowDays}天候选文献</div>
-            <div className="mt-1 text-2xl font-extrabold text-slate-900">{metrics.totalCandidates}</div>
-          </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-3">
-            <div className="text-[11px] text-slate-500">低分拦截</div>
-            <div className="mt-1 text-2xl font-extrabold text-slate-900">{metrics.intercepted}</div>
-          </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-3">
-            <div className="text-[11px] text-slate-500">核心入库</div>
-            <div className="mt-1 text-2xl font-extrabold text-slate-900">{metrics.retained}</div>
-            <div className="mt-1 text-[11px] text-slate-500">
-              保留率 {(metrics.retentionRate * 100).toFixed(1)}%
-            </div>
-          </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-3">
-            <div className="text-[11px] text-slate-500">节约阅读时间</div>
-            <div className="mt-1 text-2xl font-extrabold text-slate-900">{metrics.savedHours}h</div>
-          </div>
-        </div>
-      ) : null}
 
       <div className="flex items-center gap-2 mb-6">
         <span className="bg-teal-100 text-teal-800 p-1.5 rounded-md">
