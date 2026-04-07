@@ -378,6 +378,12 @@ export default function SettingsPage() {
     [selectedSubjectId, subjectResults],
   );
 
+  const applySubjectRecommendedJournals = React.useCallback((subject: SubjectSearchResult) => {
+    const ids = subject.journals.map((j) => j.id).filter(Boolean);
+    if (!ids.length) return;
+    setSelectedJournalIds((prev) => Array.from(new Set([...prev, ...ids])));
+  }, []);
+
   const tierStyle = React.useCallback((tier: string) => {
     const v = tier.toLowerCase();
     if (v === "top") return "text-amber-700 border-amber-300 bg-amber-50";
@@ -431,7 +437,10 @@ export default function SettingsPage() {
                   <button
                     key={subject.id}
                     type="button"
-                    onClick={() => setSelectedSubjectId(subject.id)}
+                    onClick={() => {
+                      setSelectedSubjectId(subject.id);
+                      applySubjectRecommendedJournals(subject);
+                    }}
                     className={`block w-full rounded-md px-3 py-2 text-left text-sm ${
                       selectedSubjectId === subject.id
                         ? "bg-slate-900 text-white"
