@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { runAiAnalysisCronJob } from "@/lib/ai-analysis";
 import { runPubmedSyncJob } from "@/lib/pubmed-sync";
 import { isDevBypassAuthEnabled } from "@/lib/supabase/env";
 
@@ -20,10 +21,12 @@ export async function GET(req: Request) {
 
   try {
     const result = await runPubmedSyncJob();
+    const aiResult = await runAiAnalysisCronJob();
     return NextResponse.json({
       ok: true,
       devBypassAuth: isDevBypassAuthEnabled(),
       ...result,
+      aiAnalysis: aiResult,
     });
   } catch (error) {
     return NextResponse.json(

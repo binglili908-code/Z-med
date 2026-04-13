@@ -9,6 +9,7 @@ type PaperRow = {
   title_zh?: string | null;
   journal: string | null;
   abstract: string | null;
+  abstract_zh?: string | null;
   quality_score: number | null;
 };
 
@@ -153,17 +154,20 @@ async function callDeepSeekTitle(title: string, journal: string | null) {
 async function ensurePlatformQueue(supabase: ReturnType<typeof createServiceSupabaseClient>) {
   const { data: candidates, error: candidateErr } = await supabase
     .from("papers")
-    .select("id,quality_score")
+    .select("id,quality_score,abstract,title_zh,abstract_zh")
     .eq("is_ai_med", true)
-    .is("abstract_zh", null)
     .not("abstract", "is", null)
     .order("quality_score", { ascending: false })
-    .limit(200);
+    .limit(400);
   if (candidateErr) {
     throw new Error(`Load papers for AI queue failed: ${candidateErr.message}`);
   }
 
-  const paperIds = (candidates ?? []).map((r) => r.id);
+  const todoCandidates = (candidates ?? []).filter(
+    (r) => r.abstract_zh == null || r.title_zh == null,
+  );
+
+  const paperIds = todoCandidates.map((r) => r.id);
   if (!paperIds.length) {
     return { enqueuedCount: 0 };
   }
@@ -179,7 +183,7 @@ async function ensurePlatformQueue(supabase: ReturnType<typeof createServiceSupa
   }
 
   const existing = new Set((existingRows ?? []).map((r) => r.paper_id));
-  const insertRows = (candidates ?? [])
+  const insertRows = todoCandidates
     .filter((r) => !existing.has(r.id))
     .map((r) => ({
       paper_id: r.id,
@@ -268,28 +272,33 @@ export async function runAiAnalysisCronJob() {
     }
 
     try {
-      const translated = await callDeepSeekAnalysis(paper);
-      let titleZh: string | null = null;
-      try {
-        titleZh = await callDeepSeekTitle(paper.title, paper.journal);
-      } catch {
-        titleZh = null;
-      }
-
       const updatePayload: Record<string, unknown> = {
-        abstract_zh: translated,
         updated_at: new Date().toISOString(),
       };
-      if (titleZh) {
-        updatePayload.title_zh = titleZh;
+
+      if (!paper.abstract_zh) {
+        const translated = await callDeepSeekAnalysis(paper);
+        updatePayload.abstract_zh = translated;
+      }
+
+      if (!paper.title_zh) {
+        let titleZh: string | null = null;
+        try {
+          titleZh = await callDeepSeekTitle(paper.title, paper.journal);
+        } catch {
+          titleZh = null;
+        }
+        if (titleZh) {
+          updatePayload.title_zh = titleZh;
+        }
       }
       let { error: updatePaperErr } = await supabase
         .from("papers")
         .update(updatePayload)
         .eq("id", paper.id);
-      if (updatePaperErr && titleZh) {
+      if (updatePaperErr && updatePayload.title_zh) {
         const retryPayload: Record<string, unknown> = {
-          abstract_zh: translated,
+          ...(updatePayload.abstract_zh ? { abstract_zh: updatePayload.abstract_zh } : {}),
           updated_at: new Date().toISOString(),
         };
         const retry = await supabase.from("papers").update(retryPayload).eq("id", paper.id);
