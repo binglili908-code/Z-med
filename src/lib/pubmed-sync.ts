@@ -247,6 +247,12 @@ function buildTopJournalBackfillQuery(journalTerms: string[], fromDate: string, 
   return `((${journalJoined}) AND (${aiJoined})) AND ("${fromDate}"[Date - Publication] : "${toDate}"[Date - Publication])`;
 }
 
+function buildRecentJournalQuery(journalName: string) {
+  const j = journalName.replace(/"/g, "").trim();
+  if (!j) return null;
+  return `"${j}"[Journal] AND ("last 30 days"[EDat])`;
+}
+
 function findTermMatches(text: string, terms: string[]) {
   const lower = text.toLowerCase();
   const matched = new Set<string>();
@@ -350,6 +356,19 @@ async function loadTopJournalTerms(supabase: ReturnType<typeof createServiceSupa
     for (const a of row.aliases ?? []) terms.push(a);
   }
   return dedupeTerms(terms);
+}
+
+async function loadActiveJournalNames(supabase: ReturnType<typeof createServiceSupabaseClient>) {
+  const { data, error } = await supabase
+    .from("journal_quality")
+    .select("journal_name")
+    .eq("is_active", true);
+  if (error || !data) return [] as string[];
+  return dedupeTerms(
+    (data as Array<{ journal_name: string | null }>)
+      .map((row) => row.journal_name ?? "")
+      .filter(Boolean),
+  );
 }
 
 function resolveJournalQuality(
@@ -740,6 +759,7 @@ export async function runPubmedSyncJob() {
   const supabase = createServiceSupabaseClient();
   const journalMap = await loadJournalQualityMap(supabase);
   const topJournalTerms = await loadTopJournalTerms(supabase);
+  const activeJournalNames = await loadActiveJournalNames(supabase);
 
   const { data: profileRows, error: profileErr } = await supabase
     .from("profiles")
@@ -755,7 +775,15 @@ export async function runPubmedSyncJob() {
   const broadIds = await pubmedEsearch(broadQuery, 200);
   const topJournalQuery = buildTopJournalQuery(topJournalTerms);
   const topJournalIds = topJournalQuery ? await pubmedEsearch(topJournalQuery, 300) : [];
-  const ids = dedupeIdList([...topJournalIds, ...broadIds]);
+  const byJournalIds: string[] = [];
+  for (const name of activeJournalNames) {
+    const q = buildRecentJournalQuery(name);
+    if (!q) continue;
+    const ids = await pubmedEsearch(q, 200);
+    byJournalIds.push(...ids);
+    await randomDelay(120, 220);
+  }
+  const ids = dedupeIdList([...topJournalIds, ...broadIds, ...byJournalIds]);
 
   const summaryChunks = chunk(ids, 20);
   const summaries: PubmedSummary[] = [];
@@ -776,6 +804,8 @@ export async function runPubmedSyncJob() {
     keywordCount: keywords.length,
     topJournalTermCount: topJournalTerms.length,
     topJournalFetchedCount: topJournalIds.length,
+    activeJournalCount: activeJournalNames.length,
+    byJournalFetchedCount: byJournalIds.length,
     fetchedCount: summaries.length,
     aiMedCount,
     upsertedCount: upsertRows.length,
