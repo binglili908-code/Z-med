@@ -17,7 +17,6 @@ type DbPaper = {
 };
 
 type ProfileRow = {
-  top_journals_only: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
 };
@@ -111,7 +110,6 @@ export async function buildSpotlightPapers(params: {
   const service = params.service ?? createServiceSupabaseClient();
   const { userId } = params;
 
-  let topOnly = false;
   let hasProfileConfig = false;
   const journalTerms = new Set<string>();
   const keywords: string[] = [];
@@ -119,28 +117,12 @@ export async function buildSpotlightPapers(params: {
   if (userId) {
     const { data: profile } = await service
       .from("profiles")
-      .select("top_journals_only,subscription_keywords,custom_journals")
+      .select("subscription_keywords,custom_journals")
       .eq("id", userId)
       .maybeSingle();
     const p = profile as ProfileRow | null;
-    topOnly = Boolean(p?.top_journals_only);
     for (const kw of normalizeList(p?.subscription_keywords)) keywords.push(kw);
     for (const j of normalizeList(p?.custom_journals)) journalTerms.add(j);
-
-    const { data: subs } = await service
-      .from("user_journal_subscriptions")
-      .select("journal_quality(journal_name,aliases)")
-      .eq("user_id", userId);
-    for (const row of subs ?? []) {
-      const jq = Array.isArray(row.journal_quality) ? row.journal_quality[0] : row.journal_quality;
-      const name = (jq?.journal_name ?? "").trim().toLowerCase();
-      if (name) journalTerms.add(name);
-      const aliases = Array.isArray(jq?.aliases) ? (jq.aliases as unknown[]) : [];
-      for (const alias of aliases.filter((v): v is string => typeof v === "string")) {
-        const x = alias.trim().toLowerCase();
-        if (x) journalTerms.add(x);
-      }
-    }
     hasProfileConfig = Boolean(journalTerms.size || keywords.length);
   }
 
@@ -150,10 +132,6 @@ export async function buildSpotlightPapers(params: {
       "id,title,title_zh,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
     )
     .eq("is_ai_med", true);
-
-  if (topOnly) {
-    query = query.in("quality_tier", ["top", "core"]);
-  }
 
   const { data: rows, error } = await query
     .order("quality_score", { ascending: false })

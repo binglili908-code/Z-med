@@ -31,7 +31,6 @@ type DbPaper = {
 };
 
 type ProfileRow = {
-  top_journals_only: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals?: string[] | null;
 };
@@ -104,45 +103,92 @@ export async function GET(req: Request) {
     userId = await resolveBypassUserId(service);
   }
 
-  let topOnly = false;
+  const mapPaper = (
+    p: DbPaper & { recommendation_reason?: string | null; source_type?: "precision" | "trending" | "serendipity" },
+    interactions: Map<string, { pdf_emailed_at: string | null }>,
+  ) => ({
+    id: p.id,
+    title: p.title,
+    title_zh: p.title_zh ?? null,
+    journal: p.journal ?? "PubMed",
+    publication_date: p.publication_date,
+    quality_score: Number(p.quality_score ?? 0),
+    quality_tier: ((p.quality_tier ?? "emerging").toLowerCase() as "top" | "core" | "emerging"),
+    pubmed_url: p.pubmed_url,
+    is_open_access: p.is_open_access,
+    oa_pdf_url: p.oa_pdf_url,
+    abstract_zh: p.abstract_zh,
+    ai_analysis: p.ai_analysis
+      ? {
+          summary_zh:
+            typeof p.ai_analysis.summary_zh === "string" ? p.ai_analysis.summary_zh : "",
+          background:
+            typeof p.ai_analysis.background === "string" ? p.ai_analysis.background : "",
+          method: typeof p.ai_analysis.method === "string" ? p.ai_analysis.method : "",
+          value: typeof p.ai_analysis.value === "string" ? p.ai_analysis.value : "",
+        }
+      : null,
+    topics: [],
+    source_type: p.source_type ?? ("precision" as const),
+    recommendation_score: Number(p.quality_score ?? 0),
+    recommendation_reason: p.recommendation_reason ?? null,
+    pdf_emailed_at: interactions.get(p.id)?.pdf_emailed_at ?? null,
+  });
+
+  if (userId) {
+    const { data: rpcRows, error: rpcErr } = await service.rpc("get_personalized_feed", {
+      p_user_id: userId,
+      p_page: page,
+      p_page_size: pageSize,
+    });
+    if (!rpcErr && Array.isArray(rpcRows)) {
+      const total = Number((rpcRows[0] as any)?.total_count ?? rpcRows.length);
+      const paperRows = rpcRows as unknown as DbPaper[];
+      const interactions = new Map<string, { pdf_emailed_at: string | null }>();
+      if (paperRows.length) {
+        const { data } = await service
+          .from("user_paper_interactions")
+          .select("paper_id,pdf_emailed_at")
+          .eq("user_id", userId)
+          .in("paper_id", paperRows.map((p) => p.id));
+        for (const row of data ?? []) {
+          interactions.set(row.paper_id, { pdf_emailed_at: row.pdf_emailed_at });
+        }
+      }
+      return NextResponse.json({
+        papers: paperRows.map((p) => mapPaper(p, interactions)),
+        total,
+        page,
+        pageSize,
+        personalized: true,
+        hasSubscription: true,
+        requiresLogin: false,
+        devBypassAuth: isDevBypassAuthEnabled(),
+        devBypassUserId: isDevBypassAuthEnabled() ? userId : null,
+        devBypassSeedEmail: isDevBypassAuthEnabled() ? getDevBypassSeedEmail() : null,
+      });
+    }
+  }
+
   let profileKeywords: string[] = [];
   let hasProfileConfig = false;
-  const subscribedJournalTerms = new Set<string>();
+  const customJournalTerms = new Set<string>();
 
   if (userId) {
     const { data: profile } = await service
       .from("profiles")
-      .select("top_journals_only,subscription_keywords,custom_journals")
+      .select("subscription_keywords,custom_journals")
       .eq("id", userId)
       .maybeSingle();
-    topOnly = Boolean((profile as (ProfileRow & { custom_journals?: string[] | null }) | null)?.top_journals_only);
     profileKeywords = normalizeKeywordList((profile as ProfileRow | null)?.subscription_keywords);
     const customJournals = normalizeKeywordList(
       (profile as (ProfileRow & { custom_journals?: string[] | null }) | null)?.custom_journals,
     );
-
-    const { data: journalSubs, error: journalSubsErr } = await service
-      .from("user_journal_subscriptions")
-      .select("journal_quality(journal_name,aliases)")
-      .eq("user_id", userId);
-    if (journalSubsErr) {
-      return NextResponse.json({ error: journalSubsErr.message }, { status: 500 });
-    }
-    for (const row of journalSubs ?? []) {
-      const j = Array.isArray(row.journal_quality) ? row.journal_quality[0] : row.journal_quality;
-      const name = (j?.journal_name ?? "").trim().toLowerCase();
-      if (name) subscribedJournalTerms.add(name);
-      const aliases = Array.isArray(j?.aliases) ? (j.aliases as unknown[]) : [];
-      for (const alias of aliases.filter((x): x is string => typeof x === "string")) {
-        const v = alias.trim().toLowerCase();
-        if (v) subscribedJournalTerms.add(v);
-      }
-    }
     for (const item of customJournals) {
       const v = item.trim().toLowerCase();
-      if (v) subscribedJournalTerms.add(v);
+      if (v) customJournalTerms.add(v);
     }
-    hasProfileConfig = Boolean(profileKeywords.length || subscribedJournalTerms.size);
+    hasProfileConfig = Boolean(profileKeywords.length || customJournalTerms.size);
   }
 
   let query = service
@@ -151,10 +197,6 @@ export async function GET(req: Request) {
       "id,title,title_zh,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
     )
     .eq("is_ai_med", true);
-
-  if (topOnly) {
-    query = query.in("quality_tier", ["top", "core"]);
-  }
 
   const { data: papers, error: paperErr } = await query
     .order("quality_score", { ascending: false })
@@ -165,11 +207,11 @@ export async function GET(req: Request) {
   }
 
   let orderedRows = (papers ?? []) as DbPaper[];
-  if (subscribedJournalTerms.size) {
+  if (customJournalTerms.size) {
     orderedRows = orderedRows.filter((paper) => {
       const j = (paper.journal ?? "").trim().toLowerCase();
       if (!j) return false;
-      for (const term of subscribedJournalTerms) {
+      for (const term of customJournalTerms) {
         if (j === term || j.includes(term) || term.includes(j)) return true;
       }
       return false;
@@ -194,34 +236,7 @@ export async function GET(req: Request) {
     }
   }
 
-  const mapped = paperRows.map((p) => ({
-    id: p.id,
-    title: p.title,
-    title_zh: p.title_zh ?? null,
-    journal: p.journal ?? "PubMed",
-    publication_date: p.publication_date,
-    quality_score: Number(p.quality_score ?? 0),
-    quality_tier: ((p.quality_tier ?? "emerging").toLowerCase() as "top" | "core" | "emerging"),
-    pubmed_url: p.pubmed_url,
-    is_open_access: p.is_open_access,
-    oa_pdf_url: p.oa_pdf_url,
-    abstract_zh: p.abstract_zh,
-    ai_analysis: p.ai_analysis
-      ? {
-          summary_zh:
-            typeof p.ai_analysis.summary_zh === "string" ? p.ai_analysis.summary_zh : "",
-          background:
-            typeof p.ai_analysis.background === "string" ? p.ai_analysis.background : "",
-          method: typeof p.ai_analysis.method === "string" ? p.ai_analysis.method : "",
-          value: typeof p.ai_analysis.value === "string" ? p.ai_analysis.value : "",
-        }
-      : null,
-    topics: [],
-    source_type: "precision" as const,
-    recommendation_score: Number(p.quality_score ?? 0),
-    recommendation_reason: null as string | null,
-    pdf_emailed_at: interactions.get(p.id)?.pdf_emailed_at ?? null,
-  }));
+  const mapped = paperRows.map((p) => mapPaper(p, interactions));
 
   return NextResponse.json({
     papers: mapped,

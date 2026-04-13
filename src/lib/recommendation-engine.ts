@@ -13,7 +13,6 @@ export interface RecommendationOutput {
 }
 
 type ProfileRow = {
-  top_journals_only: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
 };
@@ -41,29 +40,13 @@ export async function generateRecommendations(
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("top_journals_only,subscription_keywords,custom_journals")
+    .select("subscription_keywords,custom_journals")
     .eq("id", user_id)
     .maybeSingle();
 
-  const topOnly = Boolean((profile as ProfileRow | null)?.top_journals_only);
   const profileKeywords = normalizeKeywords((profile as ProfileRow | null)?.subscription_keywords);
   const customJournals = normalizeKeywords((profile as ProfileRow | null)?.custom_journals);
-
   const journalTerms = new Set<string>();
-  const { data: subRows } = await supabase
-    .from("user_journal_subscriptions")
-    .select("journal_quality(journal_name,aliases)")
-    .eq("user_id", user_id);
-  for (const row of subRows ?? []) {
-    const j = Array.isArray(row.journal_quality) ? row.journal_quality[0] : row.journal_quality;
-    const name = (j?.journal_name ?? "").trim().toLowerCase();
-    if (name) journalTerms.add(name);
-    const aliases = Array.isArray(j?.aliases) ? (j.aliases as unknown[]) : [];
-    for (const alias of aliases.filter((x): x is string => typeof x === "string")) {
-      const v = alias.trim().toLowerCase();
-      if (v) journalTerms.add(v);
-    }
-  }
   for (const item of customJournals) {
     journalTerms.add(item);
   }
@@ -72,10 +55,6 @@ export async function generateRecommendations(
     .from("papers")
     .select("id,title,abstract,abstract_zh,journal,quality_score,quality_tier,ai_analysis")
     .eq("is_ai_med", true);
-
-  if (topOnly) {
-    query = query.in("quality_tier", ["top", "core"]);
-  }
 
   const { data: papers, error: paperErr } = await query
     .order("quality_score", { ascending: false });

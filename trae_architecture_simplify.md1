@@ -1,0 +1,265 @@
+# Z-Lab 架构重构：用户自定义期刊 + PubMed 按需检索
+
+## 一、架构思维转变
+
+### 旧架构（已弃）
+```
+我们预设 32 本期刊 → 用户从中勾选 → 系统只推这些期刊的论文
+问题：期刊无穷无尽，我们没法穷举
+```
+
+### 新架构
+```
+用户输入关键词 + 期刊名 → PubMed API 按条件搜索 → 结果入库 → 展示给用户
+用户自己决定看什么，我们只负责高效检索和翻译
+```
+
+核心变化：**journal_quality 白名单从"用户选择的入口"降级为"内部质量评分的参考"。** 用户不需要知道白名单的存在，它只在后台默默给论文加分。
+
+---
+
+## 二、用户端的交互流程（极简）
+
+设置页只需要两个输入区域：
+
+```
+┌──────────────────────────────────────────────────┐
+│  📋 我的订阅设置                                    │
+│                                                    │
+│  关键词（必填）                                     │
+│  ┌──────────────────────────────────────────────┐ │
+│  │ [心血管] [AI诊断] [深度学习] [×添加关键词]    │ │
+│  └──────────────────────────────────────────────┘ │
+│  系统会从 PubMed 抓取包含这些关键词的 AI+医学论文    │
+│                                                    │
+│  指定期刊（选填）                                   │
+│  ┌──────────────────────────────────────────────┐ │
+│  │ [Nature Medicine] [Lancet Digital Health] [+] │ │
+│  └──────────────────────────────────────────────┘ │
+│  只看这些期刊的论文。留空则不限制期刊。              │
+│                                                    │
+│  [保存]                                            │
+└──────────────────────────────────────────────────┘
+```
+
+就这么简单。用户不需要从长列表里勾选，直接输入期刊名就行。
+
+---
+
+## 三、PubMed 检索增强（不需要爬虫）
+
+### 3.1 PubMed API 本身就支持期刊过滤
+
+PubMed 的 E-Utilities API 支持 `[Journal]` 限定词。你现有的同步任务已经在用这个 API，只需要扩展查询条件。
+
+**当前的查询（示意）：**
+```
+(artificial intelligence OR deep learning OR machine learning) AND (medical OR clinical)
+```
+
+**新的查询（加上用户的期刊限定）：**
+```
+(artificial intelligence OR deep learning OR machine learning) 
+AND (medical OR clinical)
+AND ("Nature Medicine"[Journal] OR "Lancet Digital Health"[Journal])
+```
+
+### 3.2 实现方式
+
+**方式 A：全局同步 + 入库后过滤（推荐，改动最小）**
+
+维持现有的 Cron 同步逻辑不变——每天从 PubMed 抓取 AI+医学的新论文入库。
+Feed API 在返回结果时，按用户设置的关键词和期刊名做过滤。
+
+用户设置的期刊名直接对 `papers.journal` 字段做 ILIKE 匹配：
+```sql
+-- 用户指定了 ['Nature Medicine', 'Lancet']
+WHERE (
+  p.journal ILIKE '%Nature Medicine%'
+  OR p.journal ILIKE '%Lancet%'
+)
+```
+
+优点：不需要改 PubMed 同步逻辑，改动最小
+缺点：如果用户关注的期刊没有被全局同步抓到，就搜不到
+
+**方式 B：用户维度的按需抓取（未来增强，预留接口）**
+
+针对用户指定的期刊，定期从 PubMed 额外抓取该期刊的最新 AI+医学论文。
+相当于"全局同步"之外，每个用户还有自己的"补充抓取"。
+
+这个不急着做，先用方式 A，等用户反馈"我输入了 XX 期刊但搜不到文章"时再上方式 B。
+
+### 3.3 给 CTO 预留的接口
+
+```typescript
+// 文件：src/lib/pubmed-fetcher.ts
+// 当前实现：全局关键词查询
+// CTO 可以扩展为：全局 + 用户维度的按需查询
+
+interface FetchRequest {
+  keywords: string[];           // AI+医学关键词（全局）
+  journals?: string[];          // 指定期刊（按需，来自用户订阅）
+  dateRange?: { from: string; to: string };
+}
+
+export async function fetchFromPubMed(req: FetchRequest): Promise<Paper[]> {
+  // 构建 PubMed 查询字符串
+  let query = buildAIMedQuery(req.keywords);
+  
+  if (req.journals && req.journals.length > 0) {
+    const journalFilter = req.journals
+      .map(j => `"${j}"[Journal]`)
+      .join(' OR ');
+    query += ` AND (${journalFilter})`;
+  }
+  
+  // 调用 PubMed E-Utilities API
+  // ...
+}
+```
+
+---
+
+## 四、数据库调整
+
+### 4.1 profiles 表：用 custom_journals 存用户输入的期刊名
+
+已有字段 `custom_journals text[]`，直接用它。
+
+用户输入 "Nature Medicine" → 存为 `['Nature Medicine']`
+用户输入 "Lancet" → 存为 `['Nature Medicine', 'Lancet']`
+
+### 4.2 journal_quality 表：降级为内部评分参考
+
+不再面向用户展示。它的作用变成：
+- 论文入库时，如果 `papers.journal` 命中了白名单，给一个高的 weight 加分
+- 如果没命中白名单，给 0.5 的默认 weight
+- 用户不需要知道这个表的存在
+
+### 4.3 user_journal_subscriptions 表：暂停使用
+
+这张表是"用户勾选白名单期刊"的模式产物，新架构下不需要了。
+不删除，但代码不再读写它。
+
+### 4.4 subject_categories 表：暂停使用
+
+同上，学科标签模式已弃。不删除但不使用。
+
+---
+
+## 五、给 Trae 的执行指令
+
+### P0：设置页简化
+
+把当前设置页的复杂 UI（学科搜索 + 期刊勾选 + 推荐列表）全部简化为两个输入区域：
+
+1. **关键词输入**（tags 模式，已有，保持不变）
+   - 存入 `profiles.subscription_keywords`
+   
+2. **期刊输入**（tags 模式，用户自己打字输入期刊名）
+   - 存入 `profiles.custom_journals`
+   - 输入框 placeholder："输入期刊名，如 Nature Medicine, Lancet..."
+   - 每输入一个期刊名按回车确认，显示为标签
+   - 可以删除已添加的标签
+
+**删除/隐藏的 UI 元素：**
+- 学科搜索输入框
+- 期刊勾选列表
+- AI 推荐按钮
+- "浏览全部期刊" 按钮
+- "仅看顶刊" 开关（不需要了，用户自己指定期刊就是在选择质量）
+
+### P1：Feed API 重构
+
+新的 Feed 查询逻辑极其简单：
+
+```typescript
+async function getFeed(userId: string, page: number, pageSize: number) {
+  // 1. 读取用户偏好
+  const profile = await getProfile(userId);
+  const keywords = profile.subscription_keywords;   // ['心血管', 'cardiac']
+  const journals = profile.custom_journals;          // ['Nature Medicine', 'Lancet']
+  
+  // 2. 构建查询
+  let query = supabase
+    .from('papers')
+    .select('*')
+    .eq('is_ai_med', true)
+    .order('quality_score', { ascending: false });
+  
+  // 3. 期刊过滤（如果用户指定了期刊）
+  if (journals && journals.length > 0) {
+    // 构建 OR 条件：journal ILIKE '%Nature Medicine%' OR journal ILIKE '%Lancet%'
+    const journalFilter = journals
+      .map(j => `journal.ilike.%${j}%`)
+      .join(',');
+    query = query.or(journalFilter);
+  }
+  
+  // 4. 关键词过滤（如果用户设了关键词）
+  if (keywords && keywords.length > 0) {
+    // 在 title + abstract + abstract_zh + title_zh 中搜索
+    const kwFilter = keywords.flatMap(kw => [
+      `title.ilike.%${kw}%`,
+      `abstract.ilike.%${kw}%`,
+      `abstract_zh.ilike.%${kw}%`,
+      `title_zh.ilike.%${kw}%`,
+    ]).join(',');
+    query = query.or(kwFilter);
+  }
+  
+  // 5. 分页
+  const { data, count } = await query
+    .range((page - 1) * pageSize, page * pageSize - 1);
+  
+  return { papers: data, total: count };
+}
+```
+
+**期刊过滤和关键词过滤的关系：**
+- 如果用户只设了关键词 → 在所有论文里搜关键词
+- 如果用户只设了期刊 → 显示这些期刊的所有 AI+医学论文
+- 如果两个都设了 → 在指定期刊的论文里搜关键词（AND 关系）
+- 如果都没设 → 显示全局高分论文（冷启动）
+
+### P2：Subscription API 简化
+
+`PUT /api/user/subscription` 的请求体简化为：
+
+```typescript
+interface UserSubscription {
+  keywords: string[];          // 关键词
+  custom_journals: string[];   // 用户输入的期刊名
+}
+```
+
+不再需要 `journal_ids`、`top_journals_only` 等字段。
+
+### P3：不再读写的表和 API（注释掉，不删）
+
+- `user_journal_subscriptions` 表 → 代码中所有读写注释掉
+- `subject_categories` 表 → 代码中所有读写注释掉
+- `/api/subject-categories/search` 接口 → 注释掉或返回空
+- `/api/journal-quality` 接口 → 保留但不在前端调用
+
+---
+
+## 六、这 29 本渠道期刊怎么办
+
+它们安静地待在 `journal_quality` 表里，作用是：
+
+1. **后台加分**：论文入库时，命中白名单的期刊会得到更高的 `quality_score`（weight 0.85-1.0 vs 默认 0.5），在排序中自然靠前
+2. **未来运营**：如果你以后想做"推荐期刊"功能或科研服务转化，白名单数据还在
+3. **前端不展示**：用户完全不知道白名单的存在
+
+---
+
+## 七、完成后确认
+
+- [ ] 设置页简化为：关键词输入 + 期刊输入（两个 tags 输入框）
+- [ ] Feed API 按 custom_journals + keywords 过滤
+- [ ] 期刊过滤用 ILIKE 模糊匹配（用户输入 "Lancet" 能匹配 "The Lancet. Oncology"）
+- [ ] 不再读写 user_journal_subscriptions
+- [ ] 不再读写 subject_categories
+- [ ] npm run build 通过

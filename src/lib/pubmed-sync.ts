@@ -376,7 +376,6 @@ function qualitySignals(args: {
 async function scoreAndUpsertPapers(args: {
   supabase: ReturnType<typeof createServiceSupabaseClient>;
   summaries: PubmedSummary[];
-  keywords: string[];
   journalMap: JournalQualityMatcher;
 }) {
   const upsertRows: Record<string, unknown>[] = [];
@@ -399,11 +398,21 @@ async function scoreAndUpsertPapers(args: {
   >();
 
   for (const paper of args.summaries) {
-    const signals = aiMedSignals(paper, args.keywords);
-    if (!signals.isAiMed) continue;
+    const keywordSignals = aiMedSignals(paper, []);
+    const { data: rpcScore, error: rpcErr } = await args.supabase.rpc("calculate_ai_med_score", {
+      p_title: paper.title,
+      p_abstract: paper.abstract ?? "",
+    });
+    if (rpcErr) {
+      throw new Error(`Failed to score paper via calculate_ai_med_score: ${rpcErr.message}`);
+    }
+    const scoreObj = (rpcScore ?? {}) as { is_ai_med?: boolean; score?: number | string };
+    const isAiMed = Boolean(scoreObj.is_ai_med);
+    const aiMedScore = Number(scoreObj.score ?? 0);
+    if (!isAiMed) continue;
     const journalMatched = resolveJournalQuality(paper, args.journalMap);
     const quality = qualitySignals({
-      aiMedScore: signals.aiMedScore,
+      aiMedScore,
       journalMatched,
     });
     const oa = await resolveOpenAccessByDoi(paper.doi);
@@ -417,9 +426,9 @@ async function scoreAndUpsertPapers(args: {
       pubmed_url: paper.pubmed_url,
       authors: paper.authors,
       mesh_terms: paper.mesh_terms,
-      keywords: signals.topicKeywords,
+      keywords: keywordSignals.topicKeywords,
       is_ai_med: true,
-      ai_med_score: signals.aiMedScore,
+      ai_med_score: aiMedScore,
       quality_score: quality.qualityScore,
       quality_tier: quality.qualityTier,
       is_open_access: oa.is_open_access,
@@ -760,7 +769,6 @@ export async function runPubmedSyncJob() {
   const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
     supabase,
     summaries,
-    keywords,
     journalMap,
   });
 
@@ -809,7 +817,6 @@ export async function runPubmedBackfillJob() {
   const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
     supabase,
     summaries,
-    keywords: [],
     journalMap,
   });
 

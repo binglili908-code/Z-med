@@ -3,78 +3,22 @@
 import * as React from "react";
 import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
-import { PROVIDER_CONFIG, type ByokProvider } from "@/lib/byok-config";
-
-type JournalItem = {
-  id: string;
-  journal_name: string | null;
-  aliases: string[] | null;
-  tier: string | null;
-  weight: number | null;
-  impact_factor: number | null;
-  jcr_quartile: string | null;
-  cas_zone: string | null;
-  is_active: boolean | null;
-};
-
-type JournalListResponse = {
-  items?: JournalItem[];
-};
 
 type UserSubscription = {
-  journal_ids: string[];
   custom_journals: string[];
   keywords: string[];
-  top_journals_only: boolean;
-};
-
-type SubjectSearchResult = {
-  id: string;
-  name_zh: string;
-  name_en: string;
-  journals: {
-    id: string;
-    journal_name: string;
-    tier: "top" | "core" | "emerging";
-    weight: number;
-    impact_factor: number | null;
-    jcr_quartile: string;
-    cas_zone: string;
-  }[];
-};
-
-type AiSettingsResponse = {
-  provider: string | null;
-  model: string | null;
-  apiKeyMasked: string | null;
-  ai_digest_enabled: boolean;
 };
 
 export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
   const [email, setEmail] = React.useState<string | null>(null);
   const [token, setToken] = React.useState<string | null>(null);
-  const [journals, setJournals] = React.useState<JournalItem[]>([]);
-  const [selectedJournalIds, setSelectedJournalIds] = React.useState<string[]>([]);
   const [customJournals, setCustomJournals] = React.useState<string[]>([]);
   const [customJournalInput, setCustomJournalInput] = React.useState("");
   const [keywords, setKeywords] = React.useState<string[]>([]);
   const [keywordInput, setKeywordInput] = React.useState("");
-  const [subjectQuery, setSubjectQuery] = React.useState("");
-  const [subjectLoading, setSubjectLoading] = React.useState(false);
-  const [subjectResults, setSubjectResults] = React.useState<SubjectSearchResult[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = React.useState<string | null>(null);
-  const [topJournalsOnly, setTopJournalsOnly] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
-  const [aiProvider, setAiProvider] = React.useState<ByokProvider>("deepseek");
-  const [aiModel, setAiModel] = React.useState("deepseek-chat");
-  const [aiKeyInput, setAiKeyInput] = React.useState("");
-  const [aiKeyMasked, setAiKeyMasked] = React.useState<string | null>(null);
-  const [aiDigestEnabled, setAiDigestEnabled] = React.useState(true);
-  const [aiSaving, setAiSaving] = React.useState(false);
-  const [aiTestState, setAiTestState] = React.useState<"idle" | "testing" | "ok" | "failed">("idle");
-  const [aiTestMessage, setAiTestMessage] = React.useState<string | null>(null);
 
   const supabase = React.useMemo(() => {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -96,38 +40,16 @@ export default function SettingsPage() {
       setToken(session?.access_token ?? null);
       if (session?.access_token) {
         try {
-          const [journalRes, subRes, aiRes] = await Promise.all([
-            fetch("/api/journal-quality", { cache: "no-store" }),
+          const [subRes] = await Promise.all([
             fetch("/api/user/subscription", {
               cache: "no-store",
               headers: { Authorization: `Bearer ${session.access_token}` },
             }),
-            fetch("/api/user/ai-settings", {
-              cache: "no-store",
-              headers: { Authorization: `Bearer ${session.access_token}` },
-            }),
           ]);
-          if (journalRes.ok) {
-            const journalJson = (await journalRes.json()) as JournalListResponse;
-            setJournals((journalJson.items ?? []).filter((item) => item.is_active !== false));
-          }
           if (subRes.ok) {
             const subJson = (await subRes.json()) as UserSubscription;
-            setSelectedJournalIds(subJson.journal_ids ?? []);
             setCustomJournals(subJson.custom_journals ?? []);
             setKeywords(subJson.keywords ?? []);
-            setTopJournalsOnly(Boolean(subJson.top_journals_only));
-          }
-          if (aiRes.ok) {
-            const aiJson = (await aiRes.json()) as AiSettingsResponse;
-            if (aiJson.provider && aiJson.provider in PROVIDER_CONFIG) {
-              const p = aiJson.provider as ByokProvider;
-              setAiProvider(p);
-              const modelExists = PROVIDER_CONFIG[p].models.some((m) => m.value === aiJson.model);
-              setAiModel(modelExists ? (aiJson.model as string) : PROVIDER_CONFIG[p].models[0].value);
-            }
-            setAiKeyMasked(aiJson.apiKeyMasked);
-            setAiDigestEnabled(Boolean(aiJson.ai_digest_enabled));
           }
         } catch {
           setMessage("订阅配置加载失败，请刷新后重试。");
@@ -160,12 +82,6 @@ export default function SettingsPage() {
     setCustomJournals((prev) => prev.filter((name) => name !== value));
   }, []);
 
-  const toggleJournal = React.useCallback((journalId: string) => {
-    setSelectedJournalIds((prev) =>
-      prev.includes(journalId) ? prev.filter((id) => id !== journalId) : [...prev, journalId],
-    );
-  }, []);
-
   const saveSubscription = React.useCallback(async () => {
     if (!token) return;
     setSaving(true);
@@ -178,10 +94,8 @@ export default function SettingsPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          journal_ids: selectedJournalIds,
           custom_journals: customJournals,
           keywords,
-          top_journals_only: topJournalsOnly,
         } satisfies UserSubscription),
       });
       const payload = (await res.json()) as { error?: string };
@@ -195,201 +109,8 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [customJournals, keywords, selectedJournalIds, token, topJournalsOnly]);
+  }, [customJournals, keywords, token]);
 
-  const groupedJournals = React.useMemo(() => {
-    const byImpactDesc = (a: JournalItem, b: JournalItem) => {
-      const ai = a.impact_factor == null ? -1 : Number(a.impact_factor);
-      const bi = b.impact_factor == null ? -1 : Number(b.impact_factor);
-      return bi - ai;
-    };
-    const top = journals
-      .filter((j) => (j.tier ?? "").toLowerCase() === "top")
-      .sort(byImpactDesc);
-    const core = journals
-      .filter((j) => (j.tier ?? "").toLowerCase() === "core")
-      .sort(byImpactDesc);
-    const emerging = journals
-      .filter((j) => (j.tier ?? "").toLowerCase() === "emerging")
-      .sort(byImpactDesc);
-    return { top, core, emerging };
-  }, [journals]);
-
-  const formatIf = React.useCallback((value: number | null | undefined) => {
-    if (value == null || value <= 0) return "N/A";
-    return Number(value).toFixed(2).replace(/\.00$/, "");
-  }, []);
-
-  const jcrBadgeClass = React.useCallback((jcr: string | null | undefined) => {
-    const v = (jcr ?? "").trim().toUpperCase();
-    if (v === "Q1") return "bg-emerald-100 text-emerald-700 border-emerald-200";
-    if (v === "Q2") return "bg-sky-100 text-sky-700 border-sky-200";
-    if (v === "Q3") return "bg-violet-100 text-violet-700 border-violet-200";
-    if (v === "Q4") return "bg-rose-100 text-rose-700 border-rose-200";
-    return "bg-slate-100 text-slate-700 border-slate-200";
-  }, []);
-
-  const casBadgeClass = React.useCallback((cas: string | null | undefined) => {
-    const v = (cas ?? "").trim();
-    if (v.startsWith("1")) return "bg-amber-100 text-amber-700 border-amber-200";
-    if (v.startsWith("2")) return "bg-cyan-100 text-cyan-700 border-cyan-200";
-    if (v.startsWith("3")) return "bg-indigo-100 text-indigo-700 border-indigo-200";
-    return "bg-slate-100 text-slate-700 border-slate-200";
-  }, []);
-
-  React.useEffect(() => {
-    if (!subjectQuery.trim()) {
-      setSubjectResults([]);
-      setSubjectLoading(false);
-      return;
-    }
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      setSubjectLoading(true);
-      try {
-        const res = await fetch(
-          `/api/subject-categories/search?q=${encodeURIComponent(subjectQuery.trim())}`,
-          { cache: "no-store" },
-        );
-        if (!res.ok) {
-          if (!cancelled) setSubjectResults([]);
-          return;
-        }
-        const json = (await res.json()) as { items?: SubjectSearchResult[] };
-        if (!cancelled) {
-          setSubjectResults(json.items ?? []);
-        }
-      } catch {
-        if (!cancelled) setSubjectResults([]);
-      } finally {
-        if (!cancelled) setSubjectLoading(false);
-      }
-    }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [subjectQuery]);
-
-  const providerModels = React.useMemo(() => PROVIDER_CONFIG[aiProvider].models, [aiProvider]);
-
-  const saveAiSettings = React.useCallback(async () => {
-    if (!token) return;
-    setAiSaving(true);
-    setAiTestMessage(null);
-    try {
-      const res = await fetch("/api/user/ai-settings", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          provider: aiProvider,
-          model: aiModel,
-          apiKey: aiKeyInput.trim() || undefined,
-          ai_digest_enabled: aiDigestEnabled,
-          clearKey: false,
-        }),
-      });
-      const payload = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        setAiTestMessage(payload.error ?? "保存失败");
-        return;
-      }
-      if (aiKeyInput.trim()) {
-        setAiKeyMasked(`••••${aiKeyInput.trim().slice(-4)}`);
-      }
-      setAiKeyInput("");
-      setAiTestMessage("AI 配置已保存");
-    } catch {
-      setAiTestMessage("保存失败，请重试");
-    } finally {
-      setAiSaving(false);
-    }
-  }, [aiDigestEnabled, aiKeyInput, aiModel, aiProvider, token]);
-
-  const clearAiKey = React.useCallback(async () => {
-    if (!token) return;
-    setAiSaving(true);
-    try {
-      const res = await fetch("/api/user/ai-settings", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          provider: aiProvider,
-          model: aiModel,
-          clearKey: true,
-          ai_digest_enabled: aiDigestEnabled,
-        }),
-      });
-      if (res.ok) {
-        setAiKeyMasked(null);
-        setAiKeyInput("");
-        setAiTestMessage("已清除 API Key");
-      }
-    } finally {
-      setAiSaving(false);
-    }
-  }, [aiDigestEnabled, aiModel, aiProvider, token]);
-
-  const testAiConnection = React.useCallback(async () => {
-    if (!token) return;
-    const candidateKey = aiKeyInput.trim();
-    if (!candidateKey) {
-      setAiTestState("failed");
-      setAiTestMessage("请先输入 API Key 再测试连接");
-      return;
-    }
-    setAiTestState("testing");
-    setAiTestMessage(null);
-    try {
-      const res = await fetch("/api/user/ai-settings/test", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          provider: aiProvider,
-          model: aiModel,
-          apiKey: candidateKey,
-        }),
-      });
-      const payload = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        setAiTestState("failed");
-        setAiTestMessage(`✗ ${payload.error ?? "连接失败"}`);
-        return;
-      }
-      setAiTestState("ok");
-      setAiTestMessage("✓ 连接成功");
-    } catch {
-      setAiTestState("failed");
-      setAiTestMessage("✗ 网络异常");
-    }
-  }, [aiKeyInput, aiModel, aiProvider, token]);
-
-  const selectedSubject = React.useMemo(
-    () => subjectResults.find((item) => item.id === selectedSubjectId) ?? null,
-    [selectedSubjectId, subjectResults],
-  );
-
-  const applySubjectRecommendedJournals = React.useCallback((subject: SubjectSearchResult) => {
-    const ids = subject.journals.map((j) => j.id).filter(Boolean);
-    if (!ids.length) return;
-    setSelectedJournalIds((prev) => Array.from(new Set([...prev, ...ids])));
-  }, []);
-
-  const tierStyle = React.useCallback((tier: string) => {
-    const v = tier.toLowerCase();
-    if (v === "top") return "text-amber-700 border-amber-300 bg-amber-50";
-    if (v === "core") return "text-blue-700 border-blue-300 bg-blue-50";
-    return "text-slate-700 border-slate-300 bg-slate-50";
-  }, []);
 
   if (loading) {
     return (
@@ -417,157 +138,10 @@ export default function SettingsPage() {
       <p className="mt-3 text-slate-600">当前登录账号：{email}</p>
       <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6">
         <h2 className="text-xl font-bold text-slate-900">订阅偏好</h2>
-        <p className="mt-2 text-sm text-slate-600">选择期刊并设置关键词，系统将按期刊与关键词联合筛选文献。</p>
+        <p className="mt-2 text-sm text-slate-600">填写关键词和期刊名，系统会按你的输入筛选文献。</p>
 
         <div className="mt-6">
-          <h3 className="text-sm font-semibold text-slate-900">研究领域搜索</h3>
-          <div className="mt-3">
-            <input
-              value={subjectQuery}
-              onChange={(e) => setSubjectQuery(e.target.value)}
-              placeholder="输入你的研究领域，如：肿瘤学、心血管、radiology..."
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
-            />
-            {subjectLoading ? (
-              <div className="mt-2 text-xs text-slate-500">正在匹配学科...</div>
-            ) : null}
-            {!subjectLoading && subjectQuery.trim() && subjectResults.length ? (
-              <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
-                {subjectResults.map((subject) => (
-                  <button
-                    key={subject.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedSubjectId(subject.id);
-                      applySubjectRecommendedJournals(subject);
-                    }}
-                    className={`block w-full rounded-md px-3 py-2 text-left text-sm ${
-                      selectedSubjectId === subject.id
-                        ? "bg-slate-900 text-white"
-                        : "text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    {subject.name_zh} {subject.name_en ? `· ${subject.name_en}` : ""}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        {selectedSubject ? (
-          <div className="mt-6">
-            <h3 className="text-sm font-semibold text-slate-900">
-              推荐期刊：{selectedSubject.name_zh}
-              {selectedSubject.name_en ? ` (${selectedSubject.name_en})` : ""}
-            </h3>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {selectedSubject.journals.map((journal) => {
-                const checked = selectedJournalIds.includes(journal.id);
-                return (
-                  <label
-                    key={journal.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${
-                      checked
-                        ? "border-slate-900 bg-slate-900 text-white"
-                        : "border-slate-300 bg-white text-slate-700"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleJournal(journal.id)}
-                      className="mt-0.5 h-4 w-4"
-                    />
-                    <span>
-                      <span className="block font-semibold">{journal.journal_name || "Unknown Journal"}</span>
-                      <span
-                        className={`mt-1 inline-flex rounded-md border px-2 py-0.5 text-[10px] font-semibold ${tierStyle(journal.tier)}`}
-                      >
-                        {(journal.tier ?? "emerging").toUpperCase()}
-                      </span>
-                      <span className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-semibold">
-                        <span className="inline-flex rounded-md border border-amber-200 bg-amber-100 px-2 py-0.5 text-amber-700">
-                          IF {formatIf(journal.impact_factor)}
-                        </span>
-                        <span
-                          className={`inline-flex rounded-md border px-2 py-0.5 ${jcrBadgeClass(journal.jcr_quartile)}`}
-                        >
-                          {journal.jcr_quartile || "JCR 暂无"}
-                        </span>
-                        <span
-                          className={`inline-flex rounded-md border px-2 py-0.5 ${casBadgeClass(journal.cas_zone)}`}
-                        >
-                          {journal.cas_zone || "中科院暂无"}
-                        </span>
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-
-        <div className="mt-6">
-          <h3 className="text-sm font-semibold text-slate-900">浏览全部白名单期刊</h3>
-          <div className="mt-3 space-y-5">
-            {[{ key: "top", label: "Top Tier", style: "text-amber-700 border-amber-300 bg-amber-50", list: groupedJournals.top },
-              { key: "core", label: "Core Tier", style: "text-blue-700 border-blue-300 bg-blue-50", list: groupedJournals.core },
-              { key: "emerging", label: "Emerging Tier", style: "text-slate-700 border-slate-300 bg-slate-50", list: groupedJournals.emerging }].map((group) => (
-              <div key={group.key}>
-                <div className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold ${group.style}`}>
-                  {group.label}
-                </div>
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {group.list.map((journal) => {
-                    const checked = selectedJournalIds.includes(journal.id);
-                    const aliasText = (journal.aliases ?? []).slice(0, 2).join(" / ");
-                    return (
-                      <label
-                        key={journal.id}
-                        className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${
-                          checked
-                            ? "border-slate-900 bg-slate-900 text-white"
-                            : "border-slate-300 bg-white text-slate-700"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleJournal(journal.id)}
-                          className="mt-0.5 h-4 w-4"
-                        />
-                        <span>
-                          <span className="block font-semibold">{journal.journal_name || "Unknown Journal"}</span>
-                          {aliasText ? <span className="block text-xs opacity-80">{aliasText}</span> : null}
-                          <span className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-semibold">
-                            <span className="inline-flex rounded-md border border-amber-200 bg-amber-100 px-2 py-0.5 text-amber-700">
-                              IF {formatIf(journal.impact_factor)}
-                            </span>
-                            <span
-                              className={`inline-flex rounded-md border px-2 py-0.5 ${jcrBadgeClass(journal.jcr_quartile)}`}
-                            >
-                              {journal.jcr_quartile || "JCR 暂无"}
-                            </span>
-                            <span
-                              className={`inline-flex rounded-md border px-2 py-0.5 ${casBadgeClass(journal.cas_zone)}`}
-                            >
-                              {journal.cas_zone || "中科院暂无"}
-                            </span>
-                          </span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="mt-6">
-          <h3 className="text-sm font-semibold text-slate-900">添加其他期刊</h3>
+          <h3 className="text-sm font-semibold text-slate-900">指定期刊（选填）</h3>
           <div className="mt-3 flex gap-2">
             <input
               value={customJournalInput}
@@ -578,7 +152,7 @@ export default function SettingsPage() {
                   addCustomJournal();
                 }
               }}
-              placeholder="输入期刊名后回车添加"
+              placeholder="输入期刊名，如 Nature Medicine, Lancet..."
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
             />
             <button
@@ -604,7 +178,7 @@ export default function SettingsPage() {
         </div>
 
         <div className="mt-6">
-          <h3 className="text-sm font-semibold text-slate-900">自定义关键词</h3>
+          <h3 className="text-sm font-semibold text-slate-900">关键词（必填）</h3>
           <div className="mt-3 flex gap-2">
             <input
               value={keywordInput}
@@ -640,26 +214,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="mt-6 flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
-          <div>
-            <p className="text-sm font-semibold text-slate-900">仅看顶刊</p>
-            <p className="text-xs text-slate-500">开启后优先限制在 Top/Core 质量分层文献</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setTopJournalsOnly((v) => !v)}
-            className={`relative h-7 w-12 rounded-full transition-colors ${
-              topJournalsOnly ? "bg-slate-900" : "bg-slate-300"
-            }`}
-          >
-            <span
-              className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-all ${
-                topJournalsOnly ? "right-1" : "left-1"
-              }`}
-            />
-          </button>
-        </div>
-
         <div className="mt-6">
           <button
             type="button"
@@ -673,117 +227,6 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6">
-        <h2 className="text-xl font-bold text-slate-900">AI 模型配置</h2>
-        <p className="mt-2 text-sm text-slate-600">配置你自己的模型 Key，用于“用我的模型翻译”等能力。</p>
-
-        <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="text-sm font-semibold text-slate-900">模型提供商</label>
-            <select
-              value={aiProvider}
-              onChange={(e) => {
-                const p = e.target.value as ByokProvider;
-                setAiProvider(p);
-                setAiModel(PROVIDER_CONFIG[p].models[0].value);
-              }}
-              className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            >
-              {Object.keys(PROVIDER_CONFIG).map((provider) => (
-                <option key={provider} value={provider}>
-                  {provider}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-sm font-semibold text-slate-900">模型</label>
-            <select
-              value={aiModel}
-              onChange={(e) => setAiModel(e.target.value)}
-              className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            >
-              {providerModels.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="mt-4">
-          <label className="text-sm font-semibold text-slate-900">API Key</label>
-          <input
-            type="password"
-            value={aiKeyInput}
-            onChange={(e) => setAiKeyInput(e.target.value)}
-            placeholder={aiKeyMasked ? `已配置：${aiKeyMasked}` : "输入 API Key"}
-            className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-          />
-          <div className="mt-2 text-xs text-slate-500">
-            当前状态：{aiKeyMasked ? `已配置（${aiKeyMasked}）` : "未配置"}
-          </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={testAiConnection}
-            disabled={aiTestState === "testing"}
-            className="rounded-xl border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900 disabled:opacity-50"
-          >
-            {aiTestState === "testing" ? "测试中..." : "测试连接"}
-          </button>
-          <button
-            type="button"
-            onClick={clearAiKey}
-            disabled={aiSaving}
-            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50"
-          >
-            清除 Key
-          </button>
-          <button
-            type="button"
-            onClick={saveAiSettings}
-            disabled={aiSaving}
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {aiSaving ? "保存中..." : "保存 AI 配置"}
-          </button>
-        </div>
-
-        <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
-          <div>
-            <p className="text-sm font-semibold text-slate-900">启用 AI 功能</p>
-            <p className="text-xs text-slate-500">关闭后将不使用自定义模型进行翻译能力。</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setAiDigestEnabled((v) => !v)}
-            className={`relative h-7 w-12 rounded-full transition-colors ${
-              aiDigestEnabled ? "bg-slate-900" : "bg-slate-300"
-            }`}
-          >
-            <span
-              className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-all ${
-                aiDigestEnabled ? "right-1" : "left-1"
-              }`}
-            />
-          </button>
-        </div>
-
-        {aiTestMessage ? (
-          <p
-            className={`mt-3 text-sm ${
-              aiTestState === "ok" ? "text-emerald-600" : aiTestState === "failed" ? "text-rose-600" : "text-slate-600"
-            }`}
-          >
-            {aiTestMessage}
-          </p>
-        ) : null}
-      </section>
     </main>
   );
 }
