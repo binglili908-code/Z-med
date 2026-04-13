@@ -34,6 +34,7 @@ type OpenAccessInfo = {
 };
 
 type JournalQualityRow = {
+  id?: string;
   journal_name: string;
   aliases: string[] | null;
   tier: string;
@@ -253,6 +254,19 @@ function buildRecentJournalQuery(journalName: string) {
   return `"${j}"[Journal] AND ("last 30 days"[EDat])`;
 }
 
+function formatPubmedDate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}/${m}/${d}`;
+}
+
+function buildJournalWindowQuery(journalName: string, fromDate: string, toDate: string) {
+  const j = journalName.replace(/"/g, "").trim();
+  if (!j) return null;
+  return `"${j}"[Journal] AND (${fromDate}:${toDate}[dp])`;
+}
+
 function findTermMatches(text: string, terms: string[]) {
   const lower = text.toLowerCase();
   const matched = new Set<string>();
@@ -368,6 +382,17 @@ async function loadActiveJournalNames(supabase: ReturnType<typeof createServiceS
     (data as Array<{ journal_name: string | null }>)
       .map((row) => row.journal_name ?? "")
       .filter(Boolean),
+  );
+}
+
+async function loadActiveJournals(supabase: ReturnType<typeof createServiceSupabaseClient>) {
+  const { data, error } = await supabase
+    .from("journal_quality")
+    .select("id,journal_name,aliases")
+    .eq("is_active", true);
+  if (error || !data) return [] as Array<{ id: string; journal_name: string; aliases: string[] | null }>;
+  return (data as Array<{ id: string; journal_name: string; aliases: string[] | null }>).filter(
+    (x) => Boolean(x.journal_name),
   );
 }
 
@@ -862,5 +887,101 @@ export async function runPubmedBackfillJob() {
     aiMedCount,
     upsertedCount: upsertRows.length,
     query,
+  };
+}
+
+export async function runJournalSyncJob() {
+  const supabase = createServiceSupabaseClient();
+  const journalMap = await loadJournalQualityMap(supabase);
+  const journals = await loadActiveJournals(supabase);
+
+  const today = new Date();
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const fromDate = formatPubmedDate(weekAgo);
+  const toDate = formatPubmedDate(today);
+
+  let totalFound = 0;
+  let totalPassed = 0;
+  let totalNew = 0;
+
+  for (const journal of journals) {
+    let papersFound = 0;
+    let papersPassed = 0;
+    let papersNew = 0;
+    let status = "success";
+    let errorMessage: string | null = null;
+    try {
+      const query = buildJournalWindowQuery(journal.journal_name, fromDate, toDate);
+      if (!query) continue;
+      const pmids = await pubmedEsearch(query, 100);
+      papersFound = pmids.length;
+      totalFound += papersFound;
+
+      if (pmids.length) {
+        const { data: existingRows } = await supabase
+          .from("papers")
+          .select("pmid")
+          .in("pmid", pmids);
+        const existingSet = new Set((existingRows ?? []).map((r) => r.pmid));
+        const newPmids = pmids.filter((id) => !existingSet.has(id));
+        if (newPmids.length) {
+          const chunks = chunk(newPmids, 20);
+          const summaries: PubmedSummary[] = [];
+          for (const g of chunks) {
+            const part = await pubmedEsummary(g);
+            summaries.push(...part);
+            await randomDelay(160, 260);
+          }
+          await enrichSummariesWithAbstracts(summaries);
+          const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
+            supabase,
+            summaries,
+            journalMap,
+          });
+          papersPassed = aiMedCount;
+          papersNew = upsertRows.length;
+          totalPassed += papersPassed;
+          totalNew += papersNew;
+        }
+      }
+    } catch (error) {
+      status = "failed";
+      errorMessage = error instanceof Error ? error.message.slice(0, 500) : "unknown";
+    }
+
+    await supabase.from("journal_sync_log").insert({
+      journal_quality_id: journal.id,
+      journal_name: journal.journal_name,
+      sync_from: weekAgo.toISOString().slice(0, 10),
+      sync_to: today.toISOString().slice(0, 10),
+      papers_found: papersFound,
+      papers_passed: papersPassed,
+      papers_new: papersNew,
+      status,
+      error_message: errorMessage,
+      finished_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    });
+
+    await randomDelay(350, 500);
+  }
+
+  await supabase.from("sync_state").upsert(
+    {
+      key: "journal_sync_last_run",
+      value: today.toISOString().slice(0, 10),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "key" },
+  );
+
+  return {
+    journalsSynced: journals.length,
+    syncFrom: weekAgo.toISOString().slice(0, 10),
+    syncTo: today.toISOString().slice(0, 10),
+    totalFound,
+    totalPassed,
+    totalNew,
   };
 }
