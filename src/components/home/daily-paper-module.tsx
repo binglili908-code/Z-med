@@ -11,6 +11,9 @@ type FeedPaper = {
   title: string;
   title_zh?: string | null;
   journal: string;
+  journal_if?: number | null;
+  journal_jcr?: string | null;
+  journal_cas_zone?: string | null;
   publication_date: string | null;
   abstract_zh: string | null;
   quality_score: number;
@@ -77,6 +80,9 @@ type DailyPaperView = {
   title: string;
   titleZh: string | null;
   journal: string;
+  journalIf: number | null;
+  journalJcr: string | null;
+  journalCasZone: string | null;
   date: string;
   qualityScore: number | null;
   qualityTier: string | null;
@@ -114,6 +120,9 @@ function toDailyPaperView(p: FeedPaper): DailyPaperView {
     title: p.title,
     titleZh: p.title_zh?.trim() ? p.title_zh.trim() : null,
     journal,
+    journalIf: typeof p.journal_if === "number" ? p.journal_if : null,
+    journalJcr: p.journal_jcr?.trim() ? p.journal_jcr.trim() : null,
+    journalCasZone: p.journal_cas_zone?.trim() ? p.journal_cas_zone.trim() : null,
     date,
     qualityScore: p.quality_score ?? null,
     qualityTier: p.quality_tier ?? null,
@@ -133,6 +142,9 @@ const fallbackPaper: DailyPaperView = {
   title: "正在获取今日最新文献…",
   titleZh: null,
   journal: "PubMed",
+  journalIf: null,
+  journalJcr: null,
+  journalCasZone: null,
   date: "Today",
   qualityScore: null,
   qualityTier: null,
@@ -332,6 +344,19 @@ export function DailyPaperModule() {
     return null;
   }, []);
 
+  const formatIf = React.useCallback((v: number | null) => {
+    if (v == null) return null;
+    return Number(v).toFixed(1).replace(/\.0$/, "");
+  }, []);
+
+  const ifBadgeClass = React.useCallback((v: number | null) => {
+    if (v == null) return "bg-slate-100 border-slate-300 text-slate-700";
+    if (v >= 30) return "bg-amber-100 border-amber-300 text-amber-800";
+    if (v >= 10) return "bg-blue-100 border-blue-300 text-blue-800";
+    if (v >= 5) return "bg-emerald-100 border-emerald-300 text-emerald-800";
+    return "bg-slate-100 border-slate-300 text-slate-700";
+  }, []);
+
   const toggleSummary = React.useCallback((paperId: string) => {
     setExpandedSummaryIds((prev) => ({ ...prev, [paperId]: !prev[paperId] }));
   }, []);
@@ -507,6 +532,23 @@ export function DailyPaperModule() {
             <Clock className="w-3 h-3" /> {paper.date}
           </span>
         </div>
+        <div className="mb-3 flex flex-wrap gap-2">
+          {paper.journalIf != null ? (
+            <span className={`text-xs font-semibold border px-2 py-1 rounded-md ${ifBadgeClass(paper.journalIf)}`}>
+              IF: {formatIf(paper.journalIf)}
+            </span>
+          ) : null}
+          {paper.journalJcr ? (
+            <span className="text-xs font-semibold border border-slate-300 bg-slate-100 text-slate-700 px-2 py-1 rounded-md">
+              {paper.journalJcr}
+            </span>
+          ) : null}
+          {paper.journalCasZone ? (
+            <span className="text-xs font-semibold border border-slate-300 bg-slate-100 text-slate-700 px-2 py-1 rounded-md">
+              {paper.journalCasZone}
+            </span>
+          ) : null}
+        </div>
         <a
           href={paper.pubmedUrl}
           target="_blank"
@@ -627,6 +669,23 @@ export function DailyPaperModule() {
                   </button>
                 ) : null}
               </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {it.journalIf != null ? (
+                  <span className={`text-[11px] font-semibold border px-2 py-1 rounded-md ${ifBadgeClass(it.journalIf)}`}>
+                    IF: {formatIf(it.journalIf)}
+                  </span>
+                ) : null}
+                {it.journalJcr ? (
+                  <span className="text-[11px] font-semibold border border-slate-300 bg-slate-100 text-slate-700 px-2 py-1 rounded-md">
+                    {it.journalJcr}
+                  </span>
+                ) : null}
+                {it.journalCasZone ? (
+                  <span className="text-[11px] font-semibold border border-slate-300 bg-slate-100 text-slate-700 px-2 py-1 rounded-md">
+                    {it.journalCasZone}
+                  </span>
+                ) : null}
+              </div>
               {isSummaryExpanded(it.id) ? (
                 <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 whitespace-pre-wrap">
                   {it.abstractZh}
@@ -696,6 +755,23 @@ export function DailyPaperModule() {
                       >
                         {translateState[it.id] === "translating" ? "翻译中..." : "用我的模型翻译"}
                       </button>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {it.journalIf != null ? (
+                      <span className={`text-[11px] font-semibold border px-2 py-1 rounded-md ${ifBadgeClass(it.journalIf)}`}>
+                        IF: {formatIf(it.journalIf)}
+                      </span>
+                    ) : null}
+                    {it.journalJcr ? (
+                      <span className="text-[11px] font-semibold border border-slate-300 bg-slate-100 text-slate-700 px-2 py-1 rounded-md">
+                        {it.journalJcr}
+                      </span>
+                    ) : null}
+                    {it.journalCasZone ? (
+                      <span className="text-[11px] font-semibold border border-slate-300 bg-slate-100 text-slate-700 px-2 py-1 rounded-md">
+                        {it.journalCasZone}
+                      </span>
                     ) : null}
                   </div>
                   {isSummaryExpanded(`browse-${it.id}`) ? (

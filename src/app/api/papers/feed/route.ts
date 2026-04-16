@@ -15,6 +15,9 @@ type DbPaper = {
   id: string;
   title: string;
   title_zh?: string | null;
+  journal_if?: number | null;
+  journal_jcr?: string | null;
+  journal_cas_zone?: string | null;
   abstract: string | null;
   abstract_zh: string | null;
   journal: string | null;
@@ -111,6 +114,9 @@ export async function GET(req: Request) {
     title: p.title,
     title_zh: p.title_zh ?? null,
     journal: p.journal ?? "PubMed",
+    journal_if: p.journal_if ?? null,
+    journal_jcr: p.journal_jcr ?? null,
+    journal_cas_zone: p.journal_cas_zone ?? null,
     publication_date: p.publication_date,
     quality_score: Number(p.quality_score ?? 0),
     quality_tier: ((p.quality_tier ?? "emerging").toLowerCase() as "top" | "core" | "emerging"),
@@ -194,7 +200,7 @@ export async function GET(req: Request) {
   let query = service
     .from("papers")
     .select(
-      "id,title,title_zh,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
+      "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
     )
     .eq("is_ai_med", true);
 

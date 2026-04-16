@@ -4,6 +4,9 @@ type DbPaper = {
   id: string;
   title: string;
   title_zh?: string | null;
+  journal_if?: number | null;
+  journal_jcr?: string | null;
+  journal_cas_zone?: string | null;
   abstract: string | null;
   abstract_zh: string | null;
   journal: string | null;
@@ -28,6 +31,9 @@ export type SpotlightPaper = {
   title: string;
   title_zh: string | null;
   journal: string;
+  journal_if: number | null;
+  journal_jcr: string | null;
+  journal_cas_zone: string | null;
   publication_date: string | null;
   quality_score: number;
   quality_tier: "top" | "core" | "emerging";
@@ -80,6 +86,9 @@ function toPaperOutput(
     title: paper.title,
     title_zh: paper.title_zh ?? null,
     journal: paper.journal ?? "PubMed",
+    journal_if: paper.journal_if ?? null,
+    journal_jcr: paper.journal_jcr ?? null,
+    journal_cas_zone: paper.journal_cas_zone ?? null,
     publication_date: paper.publication_date,
     quality_score: Number(paper.quality_score ?? 0),
     quality_tier: ((paper.quality_tier ?? "emerging").toLowerCase() as "top" | "core" | "emerging"),
@@ -129,7 +138,7 @@ export async function buildSpotlightPapers(params: {
   let query = service
     .from("papers")
     .select(
-      "id,title,title_zh,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
+      "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
     )
     .eq("is_ai_med", true);
 
