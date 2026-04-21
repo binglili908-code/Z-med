@@ -988,7 +988,6 @@ export async function runJournalSyncJob() {
 
 export async function runKeywordSyncJob() {
   const supabase = createServiceSupabaseClient();
-  const journalMap = await loadJournalQualityMap(supabase);
   const minimaxApiKey = process.env.MINIMAX_API_KEY?.trim() ?? "";
   const minimaxGroupId = process.env.MINIMAX_GROUP_ID?.trim() ?? "";
 
@@ -1048,7 +1047,11 @@ export async function runKeywordSyncJob() {
           .replace(/```$/, "")
           .trim()
       : trimmed;
-    return JSON.parse(cleaned) as { synonyms?: string[]; title_required?: string[] };
+    return JSON.parse(cleaned) as {
+      pubmed_query?: string;
+      synonyms?: string[];
+      title_required?: string[];
+    };
   };
 
   const callMiniMax = async (prompt: string) => {
@@ -1113,13 +1116,24 @@ export async function runKeywordSyncJob() {
         const synonymData = prompt ? await callMiniMax(prompt) : null;
         if (synonymData?.synonyms?.length) {
           llmCalls += 1;
-          await supabase.rpc("save_llm_synonyms", {
+          const saveArgs = {
             p_keyword: keyword,
             p_synonyms: synonymData.synonyms,
             p_title_required: synonymData.title_required?.length
               ? synonymData.title_required
               : synonymData.synonyms,
-          });
+            p_pubmed_query: synonymData.pubmed_query ?? null,
+          };
+          const { error: saveErr } = await supabase.rpc("save_llm_synonyms", saveArgs);
+          if (saveErr) {
+            await supabase.rpc("save_llm_synonyms", {
+              p_keyword: keyword,
+              p_synonyms: synonymData.synonyms,
+              p_title_required: synonymData.title_required?.length
+                ? synonymData.title_required
+                : synonymData.synonyms,
+            });
+          }
           const { data: queryData, error: qErr } = await supabase.rpc(
             "build_pubmed_query_for_keyword",
             {
@@ -1181,14 +1195,68 @@ export async function runKeywordSyncJob() {
     await randomDelay(180, 320);
   }
   await enrichSummariesWithAbstracts(summaries);
+  for (const paper of summaries) {
+    const { data: scoreData, error: scoreErr } = await supabase.rpc("calculate_ai_med_score", {
+      p_title: paper.title,
+      p_abstract: paper.abstract ?? "",
+    });
+    if (scoreErr) {
+      continue;
+    }
+    const scoreObj = (scoreData ?? {}) as { score?: number | string; is_ai_med?: boolean };
+    const aiScore = Number(scoreObj.score ?? 0);
 
-  const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
-    supabase,
-    summaries,
-    journalMap,
-  });
-  totalNew = upsertRows.length;
-  totalPassed = aiMedCount;
+    const { data: journalInfoData } = await supabase.rpc("get_journal_tier_and_weight", {
+      p_journal: paper.journal ?? "",
+    });
+    const journalRow = (Array.isArray(journalInfoData) ? journalInfoData[0] : journalInfoData) as
+      | {
+          tier?: string;
+          weight?: number | string;
+          impact_factor?: number | string | null;
+          jcr?: string | null;
+          cas_zone?: string | null;
+        }
+      | undefined;
+    const tier = (journalRow?.tier ?? "emerging") as "top" | "core" | "emerging";
+    const weight = Number(journalRow?.weight ?? 0.5);
+    const isAiMed = Boolean(scoreObj.is_ai_med) && tier !== "emerging";
+    const qualityScore = Number((aiScore * weight).toFixed(4));
+    const oa = await resolveOpenAccessByDoi(paper.doi);
+
+    const { error: upsertErr } = await supabase.from("papers").upsert(
+      {
+        pmid: paper.pmid,
+        doi: paper.doi ?? null,
+        title: paper.title,
+        abstract: paper.abstract,
+        journal: paper.journal,
+        publication_date: paper.publication_date,
+        pubmed_url: paper.pubmed_url,
+        authors: paper.authors,
+        mesh_terms: paper.mesh_terms,
+        keywords: paper.keywords,
+        is_open_access: oa.is_open_access,
+        oa_pdf_url: oa.oa_pdf_url,
+        ai_med_score: aiScore,
+        is_ai_med: isAiMed,
+        quality_tier: tier,
+        quality_score: qualityScore,
+        journal_if: journalRow?.impact_factor == null ? null : Number(journalRow.impact_factor),
+        journal_jcr: journalRow?.jcr ?? null,
+        journal_cas_zone: journalRow?.cas_zone ?? null,
+        source_payload: paper.source_payload,
+        fetched_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "pmid", ignoreDuplicates: true },
+    );
+    if (!upsertErr) {
+      totalNew += 1;
+      if (isAiMed) totalPassed += 1;
+    }
+    await randomDelay(120, 220);
+  }
 
   return {
     keywordCount: keywordList.length,
