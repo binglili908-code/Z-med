@@ -31,11 +31,8 @@ type DbPaper = {
   ai_analysis: Record<string, unknown> | null;
   mesh_terms: string[] | null;
   keywords: string[] | null;
-};
-
-type ProfileRow = {
-  subscription_keywords: string[] | null;
-  custom_journals?: string[] | null;
+  final_score?: number | null;
+  recommendation_reason?: string | null;
 };
 
 function getBearerToken(req: Request) {
@@ -46,29 +43,6 @@ function getBearerToken(req: Request) {
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
-}
-
-function normalizeKeywordList(values: string[] | null | undefined) {
-  const set = new Set<string>();
-  for (const raw of values ?? []) {
-    const v = raw.trim().toLowerCase();
-    if (v) set.add(v);
-  }
-  return Array.from(set);
-}
-
-function matchesAnyKeyword(paper: DbPaper, keywords: string[]) {
-  if (!keywords.length) return true;
-  const text = [
-    paper.title ?? "",
-    paper.title_zh ?? "",
-    paper.abstract ?? "",
-    paper.abstract_zh ?? "",
-    paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
-  ]
-    .join("\n")
-    .toLowerCase();
-  return keywords.some((kw) => text.includes(kw));
 }
 
 async function resolveBypassUserId(service: ReturnType<typeof createServiceSupabaseClient>) {
@@ -136,111 +110,82 @@ export async function GET(req: Request) {
       : null,
     topics: [],
     source_type: p.source_type ?? ("precision" as const),
-    recommendation_score: Number(p.quality_score ?? 0),
+    recommendation_score: Number(p.final_score ?? p.quality_score ?? 0),
     recommendation_reason: p.recommendation_reason ?? null,
     pdf_emailed_at: interactions.get(p.id)?.pdf_emailed_at ?? null,
   });
 
   if (userId) {
-    const { data: rpcRows, error: rpcErr } = await service.rpc("get_personalized_feed", {
+    const { data: feedData, error: rpcErr } = await service.rpc("get_personalized_feed", {
       p_user_id: userId,
       p_page: page,
       p_page_size: pageSize,
     });
-    if (!rpcErr && Array.isArray(rpcRows)) {
-      const total = Number((rpcRows[0] as any)?.total_count ?? rpcRows.length);
-      const paperRows = rpcRows as unknown as DbPaper[];
-      const interactions = new Map<string, { pdf_emailed_at: string | null }>();
-      if (paperRows.length) {
-        const { data } = await service
-          .from("user_paper_interactions")
-          .select("paper_id,pdf_emailed_at")
-          .eq("user_id", userId)
-          .in("paper_id", paperRows.map((p) => p.id));
-        for (const row of data ?? []) {
-          interactions.set(row.paper_id, { pdf_emailed_at: row.pdf_emailed_at });
-        }
+    if (rpcErr) {
+      console.error("Feed RPC error:", rpcErr);
+      return NextResponse.json({ error: "Failed to fetch feed" }, { status: 500 });
+    }
+
+    const asObject = feedData && typeof feedData === "object" ? (feedData as Record<string, unknown>) : null;
+    const objectPapers = Array.isArray(asObject?.papers) ? (asObject?.papers as DbPaper[]) : null;
+    const rowsFromObject = objectPapers ?? [];
+    const rowsFromArray = Array.isArray(feedData) ? (feedData as DbPaper[]) : [];
+    const paperRows = rowsFromObject.length ? rowsFromObject : rowsFromArray;
+
+    const total =
+      Number(
+        asObject?.total ??
+          asObject?.total_count ??
+          (rowsFromArray.length ? (rowsFromArray[0] as Record<string, unknown>)?.total_count : undefined),
+      ) || paperRows.length;
+    const responsePage = Number(asObject?.page ?? page) || page;
+    const responsePageSize = Number(asObject?.page_size ?? asObject?.pageSize ?? pageSize) || pageSize;
+
+    const interactions = new Map<string, { pdf_emailed_at: string | null }>();
+    if (paperRows.length) {
+      const { data } = await service
+        .from("user_paper_interactions")
+        .select("paper_id,pdf_emailed_at")
+        .eq("user_id", userId)
+        .in("paper_id", paperRows.map((p) => p.id));
+      for (const row of data ?? []) {
+        interactions.set(row.paper_id, { pdf_emailed_at: row.pdf_emailed_at });
       }
-      return NextResponse.json({
-        papers: paperRows.map((p) => mapPaper(p, interactions)),
-        total,
-        page,
-        pageSize,
-        personalized: true,
-        hasSubscription: true,
-        requiresLogin: false,
-        devBypassAuth: isDevBypassAuthEnabled(),
-        devBypassUserId: isDevBypassAuthEnabled() ? userId : null,
-        devBypassSeedEmail: isDevBypassAuthEnabled() ? getDevBypassSeedEmail() : null,
-      });
     }
+
+    return NextResponse.json({
+      papers: paperRows.map((p) => mapPaper(p, interactions)),
+      total,
+      page: responsePage,
+      pageSize: responsePageSize,
+      personalized: true,
+      hasSubscription: true,
+      requiresLogin: false,
+      devBypassAuth: isDevBypassAuthEnabled(),
+      devBypassUserId: isDevBypassAuthEnabled() ? userId : null,
+      devBypassSeedEmail: isDevBypassAuthEnabled() ? getDevBypassSeedEmail() : null,
+    });
   }
 
-  let profileKeywords: string[] = [];
-  let hasProfileConfig = false;
-  const customJournalTerms = new Set<string>();
-
-  if (userId) {
-    const { data: profile } = await service
-      .from("profiles")
-      .select("subscription_keywords,custom_journals")
-      .eq("id", userId)
-      .maybeSingle();
-    profileKeywords = normalizeKeywordList((profile as ProfileRow | null)?.subscription_keywords);
-    const customJournals = normalizeKeywordList(
-      (profile as (ProfileRow & { custom_journals?: string[] | null }) | null)?.custom_journals,
-    );
-    for (const item of customJournals) {
-      const v = item.trim().toLowerCase();
-      if (v) customJournalTerms.add(v);
-    }
-    hasProfileConfig = Boolean(profileKeywords.length || customJournalTerms.size);
-  }
-
-  let query = service
+  const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const { data: papers, error: paperErr } = await service
     .from("papers")
     .select(
       "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords",
     )
-    .eq("is_ai_med", true);
-
-  const { data: papers, error: paperErr } = await query
+    .eq("is_ai_med", true)
+    .in("quality_tier", ["top", "core"])
+    .gte("publication_date", cutoffDate)
     .order("quality_score", { ascending: false })
-    .order("ai_med_score", { ascending: false })
-    .order("publication_date", { ascending: false });
+    .order("publication_date", { ascending: false })
+    .range(fromIndex, toIndex);
   if (paperErr) {
     return NextResponse.json({ error: paperErr.message }, { status: 500 });
   }
 
-  let orderedRows = (papers ?? []) as DbPaper[];
-  if (customJournalTerms.size) {
-    orderedRows = orderedRows.filter((paper) => {
-      const j = (paper.journal ?? "").trim().toLowerCase();
-      if (!j) return false;
-      for (const term of customJournalTerms) {
-        if (j === term || j.includes(term) || term.includes(j)) return true;
-      }
-      return false;
-    });
-  }
-  if (profileKeywords.length) {
-    orderedRows = orderedRows.filter((paper) => matchesAnyKeyword(paper, profileKeywords));
-  }
-
-  const total = orderedRows.length;
-  const paperRows = orderedRows.slice(fromIndex, toIndex + 1);
+  const paperRows = (papers ?? []) as DbPaper[];
+  const total = paperRows.length;
   const interactions = new Map<string, { pdf_emailed_at: string | null }>();
-  if (userId && paperRows.length) {
-    const paperIds = paperRows.map((p) => p.id);
-    const { data } = await service
-      .from("user_paper_interactions")
-      .select("paper_id,pdf_emailed_at")
-      .eq("user_id", userId)
-      .in("paper_id", paperIds);
-    for (const row of data ?? []) {
-      interactions.set(row.paper_id, { pdf_emailed_at: row.pdf_emailed_at });
-    }
-  }
 
   const mapped = paperRows.map((p) => mapPaper(p, interactions));
 
@@ -249,8 +194,8 @@ export async function GET(req: Request) {
     total,
     page,
     pageSize,
-    personalized: hasProfileConfig,
-    hasSubscription: hasProfileConfig,
+    personalized: false,
+    hasSubscription: false,
     requiresLogin: !userId && !isDevBypassAuthEnabled(),
     devBypassAuth: isDevBypassAuthEnabled(),
     devBypassUserId: isDevBypassAuthEnabled() ? userId : null,
