@@ -112,6 +112,13 @@ function toPaperOutput(
   };
 }
 
+function parseRpcPapers(feedData: unknown) {
+  const asObject = feedData && typeof feedData === "object" ? (feedData as Record<string, unknown>) : null;
+  const objectPapers = Array.isArray(asObject?.papers) ? (asObject.papers as DbPaper[]) : null;
+  const rowsFromArray = Array.isArray(feedData) ? (feedData as DbPaper[]) : [];
+  return objectPapers ?? rowsFromArray;
+}
+
 export async function buildSpotlightPapers(params: {
   userId: string | null;
   service?: ReturnType<typeof createServiceSupabaseClient>;
@@ -135,22 +142,44 @@ export async function buildSpotlightPapers(params: {
     hasProfileConfig = Boolean(journalTerms.size || keywords.length);
   }
 
-  let query = service
-    .from("papers")
-    .select(
-      "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
-    )
-    .eq("is_ai_med", true);
+  const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  let papers: DbPaper[] = [];
 
-  const { data: rows, error } = await query
-    .order("quality_score", { ascending: false })
-    .order("publication_date", { ascending: false })
-    .limit(240);
-  if (error) {
-    throw new Error(`Failed to load papers: ${error.message}`);
+  if (userId) {
+    const { data: feedData, error: rpcErr } = await service.rpc("get_personalized_feed", {
+      p_user_id: userId,
+      p_page: 1,
+      p_page_size: 120,
+    });
+    if (rpcErr) {
+      throw new Error(`Failed to load personalized spotlight feed: ${rpcErr.message}`);
+    }
+    papers = parseRpcPapers(feedData);
+  } else {
+    const { data: rows, error } = await service
+      .from("papers")
+      .select(
+        "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
+      )
+      .eq("is_ai_med", true)
+      .in("quality_tier", ["top", "core"])
+      .gte("publication_date", cutoffDate)
+      .order("quality_score", { ascending: false })
+      .order("publication_date", { ascending: false })
+      .limit(240);
+    if (error) {
+      throw new Error(`Failed to load papers: ${error.message}`);
+    }
+    papers = (rows ?? []) as DbPaper[];
   }
 
-  const papers = (rows ?? []) as DbPaper[];
+  papers = papers.filter((paper) => {
+    const d = paper.publication_date;
+    if (!d) return false;
+    const tier = (paper.quality_tier ?? "").toLowerCase();
+    return d >= cutoffDate && (tier === "top" || tier === "core");
+  });
+
   const scored = papers.map((paper) => {
     const journal = (paper.journal ?? "").trim().toLowerCase();
     const journalMatch =
@@ -215,6 +244,19 @@ export async function buildSpotlightPapers(params: {
       reason: "与您的主方向交叉，可拓宽研究边界",
     })),
   ];
+
+  if (spotlight.length < 7) {
+    for (const item of remaining) {
+      if (spotlight.length >= 7) break;
+      if (used.has(item.paper.id)) continue;
+      used.add(item.paper.id);
+      spotlight.push({
+        paper: item.paper,
+        source_type: "precision" as const,
+        reason: hasProfileConfig ? "与您的订阅偏好相关" : "近30天高分文献",
+      });
+    }
+  }
 
   const interactions = new Map<string, string | null>();
   if (userId && spotlight.length) {
