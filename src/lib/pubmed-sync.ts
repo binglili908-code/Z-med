@@ -614,6 +614,69 @@ async function pubmedEsearch(term: string, retmax: number) {
   return ids.filter((x: unknown): x is string => typeof x === "string");
 }
 
+async function pubmedEsearchPaged(args: {
+  term: string;
+  retmax: number;
+  retstart: number;
+}): Promise<{ ids: string[]; totalCount: number }> {
+  const params = new URLSearchParams({
+    db: "pubmed",
+    retmode: "json",
+    sort: "date",
+    retmax: String(args.retmax),
+    retstart: String(args.retstart),
+    term: args.term,
+  });
+  if (process.env.NCBI_API_KEY) params.set("api_key", process.env.NCBI_API_KEY);
+  if (process.env.NCBI_TOOL) params.set("tool", process.env.NCBI_TOOL);
+  if (process.env.NCBI_EMAIL) params.set("email", process.env.NCBI_EMAIL);
+
+  const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${params.toString()}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) return { ids: [], totalCount: 0 };
+  const json = (await res.json()) as any;
+  const result = json?.esearchresult;
+  const ids = Array.isArray(result?.idlist)
+    ? result.idlist.filter((x: unknown): x is string => typeof x === "string")
+    : [];
+  const totalCountRaw = Number(result?.count ?? 0);
+  const totalCount = Number.isFinite(totalCountRaw) ? totalCountRaw : 0;
+  return { ids, totalCount };
+}
+
+async function pubmedEsearchAll(args: {
+  term: string;
+  pageSize: number;
+  maxPages: number;
+  maxRecords: number;
+}) {
+  const collected: string[] = [];
+  let retstart = 0;
+  let totalCount = 0;
+  for (let page = 0; page < args.maxPages; page += 1) {
+    if (collected.length >= args.maxRecords) break;
+    const remaining = args.maxRecords - collected.length;
+    const retmax = Math.min(args.pageSize, remaining);
+    if (retmax <= 0) break;
+    const pageResult = await pubmedEsearchPaged({
+      term: args.term,
+      retmax,
+      retstart,
+    });
+    totalCount = Math.max(totalCount, pageResult.totalCount);
+    if (!pageResult.ids.length) break;
+    collected.push(...pageResult.ids);
+    retstart += pageResult.ids.length;
+    if (pageResult.ids.length < retmax) break;
+    if (retstart >= totalCount) break;
+    await randomDelay(180, 280);
+  }
+  return {
+    ids: dedupeIdList(collected).slice(0, args.maxRecords),
+    totalCount,
+  };
+}
+
 async function pubmedEsummary(ids: string[]) {
   if (!ids.length) return [] as PubmedSummary[];
   const params = new URLSearchParams({
@@ -1008,21 +1071,38 @@ export async function runKeywordSyncJob() {
   }
 
   const keywordList = Array.from(allKeywords);
+  const syncWindows = [7, 30] as const;
   if (!keywordList.length) {
     return {
       keywordCount: 0,
       keywords: [] as string[],
+      windows: syncWindows,
       totalFound: 0,
       totalNew: 0,
       totalPassed: 0,
+      totalDropped: 0,
+      estimatedTotalFound: 0,
+      keywordStats: [] as Array<{
+        keyword: string;
+        found: number;
+        estimatedFound: number;
+        new: number;
+        passed: number;
+        dropped: number;
+        windows: number[];
+      }>,
     };
   }
 
   let totalFound = 0;
+  let estimatedTotalFound = 0;
   let totalNew = 0;
   let totalPassed = 0;
   let llmCalls = 0;
-  const allPmids: string[] = [];
+  const pmidKeywordMap = new Map<string, Set<string>>();
+  const keywordWindowMap = new Map<string, Set<number>>();
+  const keywordFoundMap = new Map<string, number>();
+  const keywordEstimatedFoundMap = new Map<string, number>();
 
   const extractQueryText = (value: unknown) => {
     if (typeof value === "string") return value;
@@ -1101,16 +1181,11 @@ export async function runKeywordSyncJob() {
       const status = typeof flagRow?.status === "string" ? flagRow.status : "unknown";
 
       if (status === "cached") {
-        const { data: queryData, error: qErr } = await supabase.rpc(
-          "build_pubmed_query_for_keyword",
-          {
-            p_keyword: keyword,
-            p_days_back: 7,
-          },
-        );
-        if (!qErr) {
-          pubmedQuery = extractQueryText(queryData);
-        }
+        const { data: queryData, error: qErr } = await supabase.rpc("build_pubmed_query_for_keyword", {
+          p_keyword: keyword,
+          p_days_back: 7,
+        });
+        if (!qErr) pubmedQuery = extractQueryText(queryData);
       } else {
         const prompt = typeof flagRow?.prompt === "string" ? flagRow.prompt : "";
         const synonymData = prompt ? await callMiniMax(prompt) : null;
@@ -1134,40 +1209,77 @@ export async function runKeywordSyncJob() {
                 : synonymData.synonyms,
             });
           }
-          const { data: queryData, error: qErr } = await supabase.rpc(
-            "build_pubmed_query_for_keyword",
-            {
-              p_keyword: keyword,
-              p_days_back: 7,
-            },
-          );
-          if (!qErr) {
-            pubmedQuery = extractQueryText(queryData);
-          }
+          const { data: queryData, error: qErr } = await supabase.rpc("build_pubmed_query_for_keyword", {
+            p_keyword: keyword,
+            p_days_back: 7,
+          });
+          if (!qErr) pubmedQuery = extractQueryText(queryData);
         }
       }
 
       if (!pubmedQuery) continue;
 
-      const pmids = await pubmedEsearch(pubmedQuery, 50);
-      if (!pmids.length) continue;
-      totalFound += pmids.length;
-      allPmids.push(...pmids);
-      await randomDelay(450, 600);
+      for (const daysBack of syncWindows) {
+        const { data: queryData, error: qErr } = await supabase.rpc("build_pubmed_query_for_keyword", {
+          p_keyword: keyword,
+          p_days_back: daysBack,
+        });
+        if (qErr) continue;
+        const windowQuery = extractQueryText(queryData);
+        if (!windowQuery) continue;
+        const result = await pubmedEsearchAll({
+          term: windowQuery,
+          pageSize: 100,
+          maxPages: daysBack <= 7 ? 6 : 10,
+          maxRecords: daysBack <= 7 ? 600 : 1000,
+        });
+        if (!result.ids.length) {
+          await randomDelay(280, 420);
+          continue;
+        }
+
+        totalFound += result.ids.length;
+        estimatedTotalFound += Math.max(result.totalCount, result.ids.length);
+        keywordFoundMap.set(keyword, (keywordFoundMap.get(keyword) ?? 0) + result.ids.length);
+        keywordEstimatedFoundMap.set(
+          keyword,
+          (keywordEstimatedFoundMap.get(keyword) ?? 0) + Math.max(result.totalCount, result.ids.length),
+        );
+        if (!keywordWindowMap.has(keyword)) keywordWindowMap.set(keyword, new Set<number>());
+        keywordWindowMap.get(keyword)!.add(daysBack);
+
+        for (const pmid of result.ids) {
+          if (!pmidKeywordMap.has(pmid)) pmidKeywordMap.set(pmid, new Set<string>());
+          pmidKeywordMap.get(pmid)!.add(keyword);
+        }
+        await randomDelay(280, 420);
+      }
     } catch {
       continue;
     }
   }
 
-  const deduped = dedupeIdList(allPmids);
+  const deduped = Array.from(pmidKeywordMap.keys());
   if (!deduped.length) {
     return {
       keywordCount: keywordList.length,
       keywords: keywordList,
+      windows: syncWindows,
       totalFound,
+      estimatedTotalFound,
       totalNew: 0,
       totalPassed: 0,
+      totalDropped: 0,
       llmCalls,
+      keywordStats: keywordList.map((keyword) => ({
+        keyword,
+        found: keywordFoundMap.get(keyword) ?? 0,
+        estimatedFound: keywordEstimatedFoundMap.get(keyword) ?? 0,
+        new: 0,
+        passed: 0,
+        dropped: 0,
+        windows: Array.from(keywordWindowMap.get(keyword) ?? []),
+      })),
     };
   }
 
@@ -1181,9 +1293,22 @@ export async function runKeywordSyncJob() {
     return {
       keywordCount: keywordList.length,
       keywords: keywordList,
+      windows: syncWindows,
       totalFound,
+      estimatedTotalFound,
       totalNew: 0,
       totalPassed: 0,
+      totalDropped: 0,
+      llmCalls,
+      keywordStats: keywordList.map((keyword) => ({
+        keyword,
+        found: keywordFoundMap.get(keyword) ?? 0,
+        estimatedFound: keywordEstimatedFoundMap.get(keyword) ?? 0,
+        new: 0,
+        passed: 0,
+        dropped: 0,
+        windows: Array.from(keywordWindowMap.get(keyword) ?? []),
+      })),
     };
   }
 
@@ -1195,6 +1320,8 @@ export async function runKeywordSyncJob() {
     await randomDelay(180, 320);
   }
   await enrichSummariesWithAbstracts(summaries);
+  const keywordNewMap = new Map<string, number>();
+  const keywordPassedMap = new Map<string, number>();
   for (const paper of summaries) {
     const { data: scoreData, error: scoreErr } = await supabase.rpc("calculate_ai_med_score", {
       p_title: paper.title,
@@ -1224,6 +1351,18 @@ export async function runKeywordSyncJob() {
     const qualityScore = Number((aiScore * weight).toFixed(4));
     const oa = await resolveOpenAccessByDoi(paper.doi);
 
+    const matchedKeywords = Array.from(pmidKeywordMap.get(paper.pmid) ?? []);
+    const existingPayload =
+      paper.source_payload && typeof paper.source_payload === "object" ? paper.source_payload : {};
+    const sourcePayload = {
+      ...existingPayload,
+      keyword_sync: {
+        matched_keywords: matchedKeywords,
+        windows: syncWindows,
+        synced_at: new Date().toISOString(),
+      },
+    };
+
     const { error: upsertErr } = await supabase.from("papers").upsert(
       {
         pmid: paper.pmid,
@@ -1245,7 +1384,7 @@ export async function runKeywordSyncJob() {
         journal_if: journalRow?.impact_factor == null ? null : Number(journalRow.impact_factor),
         journal_jcr: journalRow?.jcr ?? null,
         journal_cas_zone: journalRow?.cas_zone ?? null,
-        source_payload: paper.source_payload,
+        source_payload: sourcePayload,
         fetched_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
@@ -1253,17 +1392,47 @@ export async function runKeywordSyncJob() {
     );
     if (!upsertErr) {
       totalNew += 1;
-      if (isAiMed) totalPassed += 1;
+      for (const kw of matchedKeywords) {
+        keywordNewMap.set(kw, (keywordNewMap.get(kw) ?? 0) + 1);
+      }
+      if (isAiMed) {
+        totalPassed += 1;
+        for (const kw of matchedKeywords) {
+          keywordPassedMap.set(kw, (keywordPassedMap.get(kw) ?? 0) + 1);
+        }
+      }
     }
     await randomDelay(120, 220);
   }
 
+  const totalDropped = Math.max(0, totalNew - totalPassed);
+  const keywordStats = keywordList.map((keyword) => {
+    const found = keywordFoundMap.get(keyword) ?? 0;
+    const estimatedFound = keywordEstimatedFoundMap.get(keyword) ?? 0;
+    const nextNew = keywordNewMap.get(keyword) ?? 0;
+    const passed = keywordPassedMap.get(keyword) ?? 0;
+    const dropped = Math.max(0, nextNew - passed);
+    return {
+      keyword,
+      found,
+      estimatedFound,
+      new: nextNew,
+      passed,
+      dropped,
+      windows: Array.from(keywordWindowMap.get(keyword) ?? []),
+    };
+  });
+
   return {
     keywordCount: keywordList.length,
     keywords: keywordList,
+    windows: syncWindows,
     totalFound,
+    estimatedTotalFound,
     totalNew,
     totalPassed,
+    totalDropped,
     llmCalls,
+    keywordStats,
   };
 }
