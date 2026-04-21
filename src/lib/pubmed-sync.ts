@@ -985,3 +985,217 @@ export async function runJournalSyncJob() {
     totalNew,
   };
 }
+
+export async function runKeywordSyncJob() {
+  const supabase = createServiceSupabaseClient();
+  const journalMap = await loadJournalQualityMap(supabase);
+  const minimaxApiKey = process.env.MINIMAX_API_KEY?.trim() ?? "";
+  const minimaxGroupId = process.env.MINIMAX_GROUP_ID?.trim() ?? "";
+
+  const { data: profiles, error: profileErr } = await supabase
+    .from("profiles")
+    .select("subscription_keywords")
+    .not("subscription_keywords", "is", null);
+  if (profileErr) {
+    throw new Error(`Failed to load profile keywords: ${profileErr.message}`);
+  }
+
+  const allKeywords = new Set<string>();
+  for (const row of (profiles ?? []) as Array<{ subscription_keywords?: string[] | null }>) {
+    for (const kw of row.subscription_keywords ?? []) {
+      const v = kw.trim();
+      if (v) allKeywords.add(v);
+    }
+  }
+
+  const keywordList = Array.from(allKeywords);
+  if (!keywordList.length) {
+    return {
+      keywordCount: 0,
+      keywords: [] as string[],
+      totalFound: 0,
+      totalNew: 0,
+      totalPassed: 0,
+    };
+  }
+
+  let totalFound = 0;
+  let totalNew = 0;
+  let totalPassed = 0;
+  let llmCalls = 0;
+  const allPmids: string[] = [];
+
+  const extractQueryText = (value: unknown) => {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value) && value.length > 0) {
+      const first = value[0] as any;
+      if (typeof first === "string") return first;
+      if (typeof first?.build_pubmed_query_for_keyword === "string") {
+        return first.build_pubmed_query_for_keyword as string;
+      }
+    }
+    if (typeof (value as any)?.build_pubmed_query_for_keyword === "string") {
+      return (value as any).build_pubmed_query_for_keyword as string;
+    }
+    return "";
+  };
+
+  const parseJsonFromModelOutput = (text: string) => {
+    const trimmed = text.trim();
+    const cleaned = trimmed.startsWith("```")
+      ? trimmed
+          .replace(/^```[a-zA-Z]*\n?/, "")
+          .replace(/```$/, "")
+          .trim()
+      : trimmed;
+    return JSON.parse(cleaned) as { synonyms?: string[]; title_required?: string[] };
+  };
+
+  const callMiniMax = async (prompt: string) => {
+    if (!minimaxApiKey) return null;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${minimaxApiKey}`,
+    };
+    if (minimaxGroupId) {
+      headers["GroupId"] = minimaxGroupId;
+      headers["X-Group-Id"] = minimaxGroupId;
+    }
+    const res = await fetch("https://api.minimax.chat/v1/text/chatcompletion_v2", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "MiniMax-Text-01",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 500,
+        temperature: 0.1,
+      }),
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = (await res.json()) as any;
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || !content.trim()) return null;
+    try {
+      return parseJsonFromModelOutput(content);
+    } catch {
+      return null;
+    }
+  };
+
+  for (const keyword of keywordList) {
+    try {
+      let pubmedQuery = "";
+
+      const { data: keywordFlagData } = await supabase.rpc("get_or_flag_keyword", {
+        p_keyword: keyword,
+      });
+      const flagRow = Array.isArray(keywordFlagData)
+        ? (keywordFlagData[0] as any)
+        : (keywordFlagData as any);
+      const status = typeof flagRow?.status === "string" ? flagRow.status : "unknown";
+
+      if (status === "cached") {
+        const { data: queryData, error: qErr } = await supabase.rpc(
+          "build_pubmed_query_for_keyword",
+          {
+            p_keyword: keyword,
+            p_days_back: 7,
+          },
+        );
+        if (!qErr) {
+          pubmedQuery = extractQueryText(queryData);
+        }
+      } else {
+        const prompt = typeof flagRow?.prompt === "string" ? flagRow.prompt : "";
+        const synonymData = prompt ? await callMiniMax(prompt) : null;
+        if (synonymData?.synonyms?.length) {
+          llmCalls += 1;
+          await supabase.rpc("save_llm_synonyms", {
+            p_keyword: keyword,
+            p_synonyms: synonymData.synonyms,
+            p_title_required: synonymData.title_required?.length
+              ? synonymData.title_required
+              : synonymData.synonyms,
+          });
+          const { data: queryData, error: qErr } = await supabase.rpc(
+            "build_pubmed_query_for_keyword",
+            {
+              p_keyword: keyword,
+              p_days_back: 7,
+            },
+          );
+          if (!qErr) {
+            pubmedQuery = extractQueryText(queryData);
+          }
+        }
+      }
+
+      if (!pubmedQuery) continue;
+
+      const pmids = await pubmedEsearch(pubmedQuery, 50);
+      if (!pmids.length) continue;
+      totalFound += pmids.length;
+      allPmids.push(...pmids);
+      await randomDelay(450, 600);
+    } catch {
+      continue;
+    }
+  }
+
+  const deduped = dedupeIdList(allPmids);
+  if (!deduped.length) {
+    return {
+      keywordCount: keywordList.length,
+      keywords: keywordList,
+      totalFound,
+      totalNew: 0,
+      totalPassed: 0,
+      llmCalls,
+    };
+  }
+
+  const { data: existingRows } = await supabase
+    .from("papers")
+    .select("pmid")
+    .in("pmid", deduped);
+  const existing = new Set((existingRows ?? []).map((r) => r.pmid));
+  const newPmids = deduped.filter((id) => !existing.has(id));
+  if (!newPmids.length) {
+    return {
+      keywordCount: keywordList.length,
+      keywords: keywordList,
+      totalFound,
+      totalNew: 0,
+      totalPassed: 0,
+    };
+  }
+
+  const summaryChunks = chunk(newPmids, 20);
+  const summaries: PubmedSummary[] = [];
+  for (const group of summaryChunks) {
+    const part = await pubmedEsummary(group);
+    summaries.push(...part);
+    await randomDelay(180, 320);
+  }
+  await enrichSummariesWithAbstracts(summaries);
+
+  const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
+    supabase,
+    summaries,
+    journalMap,
+  });
+  totalNew = upsertRows.length;
+  totalPassed = aiMedCount;
+
+  return {
+    keywordCount: keywordList.length,
+    keywords: keywordList,
+    totalFound,
+    totalNew,
+    totalPassed,
+    llmCalls,
+  };
+}

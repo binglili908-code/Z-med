@@ -17,6 +17,10 @@
       "schedule": "0 12 * * *"
     },
     {
+      "path": "/api/cron/keyword-sync",
+      "schedule": "0 9 * * *"
+    },
+    {
       "path": "/api/cron/ai-analysis",
       "schedule": "0 6 * * *"
     }
