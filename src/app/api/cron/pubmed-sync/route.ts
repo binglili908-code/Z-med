@@ -6,6 +6,7 @@ import { isDevBypassAuthEnabled } from "@/lib/supabase/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 function isAuthorized(req: Request) {
   const secret = process.env.CRON_SECRET;
