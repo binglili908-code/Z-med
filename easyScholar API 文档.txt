@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>easyScholar API 文档</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2, h3, h4 {
+            color: #2c3e50;
+        }
+        h1 { border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h2 { margin-top: 30px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        th { background-color: #f8f9fa; font-weight: bold; }
+        pre {
+            background-color: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            border: 1px solid #ddd;
+        }
+        code { font-family: Consolas, Monaco, "Courier New", monospace; color: #d63384; }
+        pre code { color: #333; }
+        .highlight-note {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffecb5;
+            padding: 10px;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>期刊等级查询接口文档 [cite: 2]</h1>
+
+    <h2>当前用户信息</h2>
+    <table>
+        <tr>
+            <th>用户名</th>
+            <td>18321873492 [cite: 1]</td>
+            <th>密钥SecretKey</th>
+            <td>7a4792bc15ab44a38f3a7953879a489b [cite: 1]</td>
+            <th>已调用次数</th>
+            <td>0 [cite: 1]</td>
+        </tr>
+        <tr>
+            <th>快速生成接口</th>
+            <td colspan="3"><a href="https://www.easyscholar.cc/open/getPublicationRank?secretKey=7a4792bc15ab44a38f3a7953879a489b&publicationName=npj%20Digital%20Medicine">https://www.easyscholar.cc/open/getPublicationRank?secretKey=7a4792bc15ab44a38f3a7953879a489b&publicationName=npj%20Digital%20Medicine</a> [cite: 1]</td>
+            <th>测试接口</th>
+            <td>调用接口 [cite: 1]</td>
+        </tr>
+    </table>
+
+    <h2>产品概述 [cite: 3]</h2>
+    <p>考虑到众多第三方应用有查询期刊等级的需求，于是开放此接口供用户免登录查询。此接口相比于扩展接口，速度更快，稳定性更强，逻辑更加清楚，免密操作更安全。[cite: 4]</p>
+
+    <h2>注意事项 [cite: 5]</h2>
+    <ul>
+        <li>会员服务中所涉及的 期刊等级查询功能 并非此api接口。该接口不与会员服务绑定，目前免费对所有用户开放，祝各位科研工作者一切顺利！ [cite: 6]</li>
+        <li>接口需要通过 <code>密钥SecretKey</code> 确认身份， 该SecretKey无法更改，请勿透露给任何人。 [cite: 7]</li>
+        <li>该接口不涉及登录操作，不会挤占当前用户的登录。 [cite: 8]</li>
+        <li>实际开发中请注意对期刊名进行<code>encodeURIComponent()</code>编码，防止<code>&</code>等符号影响传参 [cite: 9]</li>
+        <li>实际开发中请对请求速度做限制，每秒最多2次请求。 [cite: 10]</li>
+        <li>可以参考此文章对Zotero进行配置。如何在Zotero上与easyScholar联动 [cite: 11]</li>
+    </ul>
+
+    <h2>API [cite: 12]</h2>
+    <p><strong>接口地址：</strong> <code>https://www.easyscholar.cc/open/getPublicationRank</code><br>
+    <strong>请求方式：</strong> <code>GET</code> [cite: 13]</p>
+
+    <h3>请求参数： [cite: 14]</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>参数名</th>
+                <th>类型</th>
+                <th>必填</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>secretKey</td>
+                <td>string</td>
+                <td>是</td>
+                <td>根据此key确认身份 [cite: 15]</td>
+            </tr>
+            <tr>
+                <td>publicationName</td>
+                <td>string</td>
+                <td>是</td>
+                <td>期刊名称 [cite: 15]</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>返回结果： [cite: 16]</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>参数名</th>
+                <th>类型</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>code</td>
+                <td>int</td>
+                <td>成功为200，失败为其他 [cite: 17]</td>
+            </tr>
+            <tr>
+                <td>msg</td>
+                <td>string</td>
+                <td>成功为“SUCCESS”，失败为其他 [cite: 17]</td>
+            </tr>
+            <tr>
+                <td>data</td>
+                <td>嵌套对象</td>
+                <td>失败为null [cite: 17]</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>错误返回示例： [cite: 18]</h3>
+<pre><code>{
+  "code": 40002,
+  "msg": "Key错误",
+  "data": null
+}</code></pre> [cite: 19, 20, 21, 22, 23]
+
+    <h3>正确返回结果： [cite: 24]</h3>
+<pre><code>{
+  "code": 200,
+  "msg": "SUCCESS",
+  "data": {
+    "customRank": {
+      "rankInfo": [
+        {
+          "uuid": "1613157898765070336",
+          "abbName": "国自然管科",
+          "oneRankText": "A",
+          "twoRankText": "B"
+        },
+        {
+          "uuid": "1614986460329492480",
+          "abbName": "DUFE",
+          "oneRankText": "TOP",
+          "twoRankText": "A",
+          "threeRankText": "B",
+          "fourRankText": "C",
+          "fiveRankText": "D"
+        }
+      ],
+      "rank": [
+        "1614986460329492480&&&3"
+      ]
+    },
+    "officialRank": {
+      "all": {
+        "swufe": "A",
+        "cufe": "AA"
+      },
+      "select": {
+        "cufe": "AA"
+      }
+    }
+  }
+}</code></pre> [cite: 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
+
+    <h3>正确结果解释： [cite: 62]</h3>
+    <p><code>data</code>中包含两个对象，分别是<code>customRank</code>, <code>officialRank</code>，分别对应 <strong>自定义数据集</strong>， <strong>官方数据集</strong> [cite: 63]</p>
+
+    <h4>officialRank： [cite: 64]</h4>
+    <ul>
+        <li><code>all</code>, <code>select</code>类型相同，分别代表 <strong>所有数据等级</strong> ， <strong>用户在扩展端选中的数据集</strong> [cite: 65]</li>
+        <li><code>all</code>, <code>select</code>一共有37个字段（无结果的字段不返回），例如swufe, sci, ssci等，具体字段解释见 <strong>附录1</strong> 。 [cite: 66]</li>
+    </ul>
+
+    <h4>customRank： [cite: 67]</h4>
+    <ul>
+        <li><code>rankInfo</code>代表用户添加的数据集信息，可能包含多个，具体字段解释见 <strong>附录2</strong> 。 [cite: 68]</li>
+        <li><code>rank</code>代表该期刊在自定义数据集中的等级，结构构成为<code>{{rankInfo.uuid}}&&&{{rank}}</code>。首先通过<code>split()</code>函数获得uuid与rank，前者为数据集的uuid，通过此uuid前往<code>rankInfo</code>中寻找uuid相同的自定义数据集，获得其缩写；后者为等级，范围[1-5]，通过此范围前往自定义数据集中，获得对应的等级缩写。 [cite: 69]</li>
+        <li><strong>例如：</strong> 结果示例中<code>1614986460329492480&&&3</code>，uuid为<code>1614986460329492480</code>。通过此uuid获得abbName为 <strong>DUFE</strong> （东北财经大学），再通过3获得threeRankText缩写为<strong>B</strong>。于是展示出结果： <strong>DUFE B</strong> [cite: 70]</li>
+    </ul>
+
+    <hr>
+
+    <h2>附录 [cite: 71]</h2>
+
+    <h3>附录1： [cite: 72]</h3>
+    <p>仅展示缩写对应的单位，具体数据集与等级划分，请前往官网查看 [cite: 73]</p>
+    <table>
+        <thead>
+            <tr>
+                <th>缩写</th>
+                <th>解释</th>
+                <th>缩写</th>
+                <th>解释</th>
+                <th>缩写</th>
+                <th>解释</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>swufe</td>
+                <td>西南财经大学 [cite: 74]</td>
+                <td>cqu</td>
+                <td>重庆大学 [cite: 74]</td>
+                <td>sciif</td>
+                <td>SCI影响因子-JCR [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>cufe</td>
+                <td>中央财经大学 [cite: 74]</td>
+                <td>nju</td>
+                <td>南京大学 [cite: 74]</td>
+                <td>sci</td>
+                <td>SCI分区-JCR [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>uibe</td>
+                <td>对外经济贸易大学 [cite: 74]</td>
+                <td>xju</td>
+                <td>新疆大学 [cite: 74]</td>
+                <td>ssci</td>
+                <td>SSCI分区-JCR [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>sdufe</td>
+                <td>山东财经大学 [cite: 74]</td>
+                <td>cug</td>
+                <td>中国地质大学 [cite: 74]</td>
+                <td>jci</td>
+                <td>JCI指数-JCR [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>xdu</td>
+                <td>西安电子科技大学 [cite: 74]</td>
+                <td>ccf</td>
+                <td>中国计算机学会 [cite: 74]</td>
+                <td>sciif5</td>
+                <td>SCI五年影响因子-JCR [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>swjtu</td>
+                <td>西南交通大学 [cite: 74]</td>
+                <td>cju</td>
+                <td>长江大学（不是计量大学） [cite: 74]</td>
+                <td>sciwarn</td>
+                <td>中科院预警 [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>ruc</td>
+                <td>中国人民大学 [cite: 74]</td>
+                <td>zju</td>
+                <td>浙江大学 [cite: 74]</td>
+                <td>sciBase</td>
+                <td>SCI基础版分区-中科院 [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>xmu</td>
+                <td>厦门大学 [cite: 74]</td>
+                <td>zhongguokejihexin</td>
+                <td>中国科技核心期刊 [cite: 74]</td>
+                <td>sciUp</td>
+                <td>SCI升级版分区-中科院 [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>sjtu</td>
+                <td>上海交通大学 [cite: 74]</td>
+                <td>fms</td>
+                <td>FMS [cite: 74]</td>
+                <td>ajg</td>
+                <td>ABS学术期刊指南 [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>fdu</td>
+                <td>复旦大学 [cite: 74]</td>
+                <td>utd24</td>
+                <td>UTD24 [cite: 74]</td>
+                <td>ft50</td>
+                <td>FT50 [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>hhu</td>
+                <td>河海大学 [cite: 74]</td>
+                <td>eii</td>
+                <td>EI检索 [cite: 74]</td>
+                <td>cscd</td>
+                <td>中国科学引文数据库 [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>pku</td>
+                <td>北大核心 [cite: 74]</td>
+                <td>cssci</td>
+                <td>南大核心 [cite: 74]</td>
+                <td>ahci</td>
+                <td>A&HCI [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>scu</td>
+                <td>四川大学 [cite: 74]</td>
+                <td>sciUpSmall</td>
+                <td>中科院升级版小类分区 [cite: 74]</td>
+                <td>esi</td>
+                <td>ESI学科分类 [cite: 74]</td>
+            </tr>
+            <tr>
+                <td>sciUpTop</td>
+                <td>中科院升级版Top分区 [cite: 74]</td>
+                <td>cpu</td>
+                <td>中国药科大学 [cite: 74]</td>
+                <td></td>
+                <td></td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="highlight-note">
+        <p><strong>注意：</strong> <code>sciUpSmall</code>、<code>esi</code>、<code>sciUpTop</code>、<code>cpu</code> 为2024年3月19日新增字段，在此之前创作的第三方软件，可能并不能识别这几条字段 [cite: 75]</p>
+    </div>
+
+    <h3>附录2： [cite: 76]</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>字段名</th>
+                <th>解释</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>uuid</td>
+                <td>自定义数据集唯一ID [cite: 77]</td>
+            </tr>
+            <tr>
+                <td>abbName</td>
+                <td>数据集缩写 [cite: 77]</td>
+            </tr>
+            <tr>
+                <td>oneRankText</td>
+                <td>等级一缩写 [cite: 77]</td>
+            </tr>
+            <tr>
+                <td>twoRankText</td>
+                <td>等级二缩写 [cite: 77]</td>
+            </tr>
+            <tr>
+                <td>threeRankText</td>
+                <td>等级三缩写 [cite: 77]</td>
+            </tr>
+            <tr>
+                <td>fourRankText</td>
+                <td>等级四缩写 [cite: 77]</td>
+            </tr>
+            <tr>
+                <td>fiveRankText</td>
+                <td>等级五缩写 [cite: 77]</td>
+            </tr>
+        </tbody>
+    </table>
+
+</body>
+</html>
