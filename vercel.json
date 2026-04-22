@@ -23,6 +23,14 @@
     {
       "path": "/api/cron/ai-analysis",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/easyscholar-sync",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/quality-recompute",
+      "schedule": "45 3 * * *"
     }
   ]
 }

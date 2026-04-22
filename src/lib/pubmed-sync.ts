@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { computeDynamicQualityScore } from "@/lib/journal-score";
 
 type ProfileKeywordRow = {
   subscription_keywords: string[] | null;
@@ -39,6 +40,9 @@ type JournalQualityRow = {
   aliases: string[] | null;
   tier: string;
   weight: number | null;
+  impact_factor?: number | null;
+  jcr_quartile?: string | null;
+  cas_zone?: string | null;
   is_active: boolean | null;
 };
 
@@ -339,7 +343,7 @@ async function loadJournalQualityMap(
 ): Promise<JournalQualityMatcher> {
   const { data, error } = await supabase
     .from("journal_quality")
-    .select("journal_name,aliases,tier,weight,is_active")
+    .select("journal_name,aliases,tier,weight,impact_factor,jcr_quartile,cas_zone,is_active")
     .eq("is_active", true);
   if (error || !data) {
     return { exactByName: new Map<string, JournalQualityRow>(), byAlias: new Map<string, JournalQualityRow>() };
@@ -411,10 +415,21 @@ function qualitySignals(args: {
   aiMedScore: number;
   journalMatched: JournalQualityRow | null;
 }) {
-  const journalWeight = Number(args.journalMatched?.weight ?? 0.5);
-  const qualityScore = Number((args.aiMedScore * journalWeight).toFixed(4));
+  const dynamic = computeDynamicQualityScore({
+    aiMedScore: args.aiMedScore,
+    baseWeight: args.journalMatched?.weight ?? 0.5,
+    impactFactor: args.journalMatched?.impact_factor ?? null,
+    jcrQuartile: args.journalMatched?.jcr_quartile ?? null,
+    casZone: args.journalMatched?.cas_zone ?? null,
+  });
   const qualityTier = args.journalMatched?.tier ?? "emerging";
-  return { qualityScore, qualityTier };
+  return {
+    qualityScore: dynamic.qualityScore,
+    qualityTier,
+    journalIf: dynamic.impactFactor,
+    journalJcr: dynamic.jcrQuartile,
+    journalCasZone: dynamic.casZone,
+  };
 }
 
 async function scoreAndUpsertPapers(args: {
@@ -475,6 +490,9 @@ async function scoreAndUpsertPapers(args: {
       ai_med_score: aiMedScore,
       quality_score: quality.qualityScore,
       quality_tier: quality.qualityTier,
+      journal_if: quality.journalIf,
+      journal_jcr: quality.journalJcr,
+      journal_cas_zone: quality.journalCasZone,
       is_open_access: oa.is_open_access,
       oa_pdf_url: oa.oa_pdf_url,
       source_payload: paper.source_payload,
@@ -1346,9 +1364,15 @@ export async function runKeywordSyncJob() {
         }
       | undefined;
     const tier = (journalRow?.tier ?? "emerging") as "top" | "core" | "emerging";
-    const weight = Number(journalRow?.weight ?? 0.5);
     const isAiMed = Boolean(scoreObj.is_ai_med) && tier !== "emerging";
-    const qualityScore = Number((aiScore * weight).toFixed(4));
+    const dynamic = computeDynamicQualityScore({
+      aiMedScore: aiScore,
+      baseWeight: journalRow?.weight == null ? 0.5 : Number(journalRow.weight),
+      impactFactor: journalRow?.impact_factor ?? null,
+      jcrQuartile: journalRow?.jcr ?? null,
+      casZone: journalRow?.cas_zone ?? null,
+    });
+    const qualityScore = dynamic.qualityScore;
     const oa = await resolveOpenAccessByDoi(paper.doi);
 
     const matchedKeywords = Array.from(pmidKeywordMap.get(paper.pmid) ?? []);
@@ -1381,9 +1405,9 @@ export async function runKeywordSyncJob() {
         is_ai_med: isAiMed,
         quality_tier: tier,
         quality_score: qualityScore,
-        journal_if: journalRow?.impact_factor == null ? null : Number(journalRow.impact_factor),
-        journal_jcr: journalRow?.jcr ?? null,
-        journal_cas_zone: journalRow?.cas_zone ?? null,
+        journal_if: dynamic.impactFactor,
+        journal_jcr: dynamic.jcrQuartile,
+        journal_cas_zone: dynamic.casZone,
         source_payload: sourcePayload,
         fetched_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
