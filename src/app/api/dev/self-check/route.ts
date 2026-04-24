@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { authorizeDeveloperRequest } from "@/lib/dev-admin-auth";
 import {
   getDevBypassSeedEmail,
   getDevBypassUserId,
@@ -24,9 +25,10 @@ async function resolveBypassUserId(service: ReturnType<typeof createServiceSupab
   return data?.id ?? null;
 }
 
-export async function GET() {
-  if (process.env.NODE_ENV === "production") {
-    return NextResponse.json({ error: "Not available in production" }, { status: 403 });
+export async function GET(req: Request) {
+  const auth = await authorizeDeveloperRequest(req);
+  if (!auth.authorized) {
+    return auth.response;
   }
 
   const service = createServiceSupabaseClient();
@@ -60,16 +62,16 @@ export async function GET() {
     process.env.RESEND_API_KEY?.trim() && process.env.RESEND_FROM_EMAIL?.trim(),
   );
 
-  const allPassed = Boolean(
-    bypassEnabled &&
-      resolvedUserId &&
-      profile?.contact_email &&
-      resendConfigured &&
-      (oaCount ?? 0) > 0,
-  );
+  const accessReady =
+    auth.actor.mode === "email"
+      ? true
+      : Boolean(bypassEnabled && resolvedUserId && profile?.contact_email);
+
+  const allPassed = Boolean(accessReady && resendConfigured && (oaCount ?? 0) > 0);
 
   return NextResponse.json({
     ok: allPassed,
+    actor: auth.actor,
     checks: {
       bypassEnabled,
       seedEmail: seedEmail ?? null,

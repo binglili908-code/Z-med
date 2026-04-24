@@ -14,6 +14,8 @@ type SearchPaper = {
   abstract: string | null;
   abstract_zh: string | null;
   journal: string | null;
+  journal_if?: number | null;
+  journal_cas_zone?: string | null;
   publication_date: string | null;
   pubmed_url: string | null;
   is_open_access: boolean | null;
@@ -40,6 +42,8 @@ function buildSearchParams(input: {
   oaOnly?: boolean;
   from?: string;
   to?: string;
+  ifMin?: string;
+  ifMax?: string;
   page?: number;
 }) {
   const params = new URLSearchParams();
@@ -47,15 +51,33 @@ function buildSearchParams(input: {
   const tier = (input.tier ?? "").trim();
   const from = (input.from ?? "").trim();
   const to = (input.to ?? "").trim();
+  const ifMin = (input.ifMin ?? "").trim();
+  const ifMax = (input.ifMax ?? "").trim();
 
   if (q) params.set("q", q);
   if (tier) params.set("tier", tier);
   if (input.oaOnly) params.set("oa", "true");
   if (from) params.set("from", from);
   if (to) params.set("to", to);
+  if (ifMin) params.set("ifMin", ifMin);
+  if (ifMax) params.set("ifMax", ifMax);
   params.set("page", String(Math.max(1, input.page ?? 1)));
   params.set("pageSize", "10");
   return params;
+}
+
+function formatIf(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(Number(value))) return "暂无";
+  return Number(value).toFixed(1).replace(/\.0$/, "");
+}
+
+function formatIfRangeLabel(min: string, max: string) {
+  const normalizedMin = min.trim();
+  const normalizedMax = max.trim();
+  if (normalizedMin && normalizedMax) return `IF：${normalizedMin} - ${normalizedMax}`;
+  if (normalizedMin) return `IF ≥ ${normalizedMin}`;
+  if (normalizedMax) return `IF ≤ ${normalizedMax}`;
+  return "";
 }
 
 function normalizeHighlightTerms(q: string) {
@@ -103,6 +125,8 @@ export function LiteratureSearchPage() {
   const initialOa = searchParams.get("oa") === "true";
   const initialFrom = (searchParams.get("from") ?? "").trim();
   const initialTo = (searchParams.get("to") ?? "").trim();
+  const initialIfMin = (searchParams.get("ifMin") ?? "").trim();
+  const initialIfMax = (searchParams.get("ifMax") ?? "").trim();
   const initialPage = Math.max(1, Number(searchParams.get("page") ?? "1") || 1);
 
   const [query, setQuery] = React.useState(initialQ);
@@ -110,11 +134,19 @@ export function LiteratureSearchPage() {
   const [oaOnly, setOaOnly] = React.useState(initialOa);
   const [fromDate, setFromDate] = React.useState(initialFrom);
   const [toDate, setToDate] = React.useState(initialTo);
+  const [ifMin, setIfMin] = React.useState(initialIfMin);
+  const [ifMax, setIfMax] = React.useState(initialIfMax);
   const [loading, setLoading] = React.useState(false);
   const [total, setTotal] = React.useState(0);
   const [items, setItems] = React.useState<SearchPaper[]>([]);
   const highlightTerms = React.useMemo(() => normalizeHighlightTerms(initialQ), [initialQ]);
-  const hasActiveFilters = Boolean(initialQ || initialTier || initialOa || initialFrom || initialTo);
+  const ifRangeLabel = React.useMemo(
+    () => formatIfRangeLabel(initialIfMin, initialIfMax),
+    [initialIfMax, initialIfMin],
+  );
+  const hasActiveFilters = Boolean(
+    initialQ || initialTier || initialOa || initialFrom || initialTo || initialIfMin || initialIfMax,
+  );
 
   React.useEffect(() => {
     setQuery(initialQ);
@@ -122,7 +154,9 @@ export function LiteratureSearchPage() {
     setOaOnly(initialOa);
     setFromDate(initialFrom);
     setToDate(initialTo);
-  }, [initialFrom, initialOa, initialQ, initialTier, initialTo]);
+    setIfMin(initialIfMin);
+    setIfMax(initialIfMax);
+  }, [initialFrom, initialIfMax, initialIfMin, initialOa, initialQ, initialTier, initialTo]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -132,6 +166,8 @@ export function LiteratureSearchPage() {
       oaOnly: initialOa,
       from: initialFrom,
       to: initialTo,
+      ifMin: initialIfMin,
+      ifMax: initialIfMax,
       page: initialPage,
     });
 
@@ -160,7 +196,7 @@ export function LiteratureSearchPage() {
 
     void load();
     return () => controller.abort();
-  }, [initialFrom, initialOa, initialPage, initialQ, initialTier, initialTo]);
+  }, [initialFrom, initialIfMax, initialIfMin, initialOa, initialPage, initialQ, initialTier, initialTo]);
 
   const onSubmit = React.useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
@@ -171,11 +207,13 @@ export function LiteratureSearchPage() {
         oaOnly,
         from: fromDate,
         to: toDate,
+        ifMin,
+        ifMax,
         page: 1,
       });
       router.push(`/literature-trends?${params.toString()}`);
     },
-    [fromDate, oaOnly, query, router, tier, toDate],
+    [fromDate, ifMax, ifMin, oaOnly, query, router, tier, toDate],
   );
 
   const goPage = React.useCallback(
@@ -235,6 +273,26 @@ export function LiteratureSearchPage() {
                 仅看开放获取
               </label>
               <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={ifMin}
+                onChange={(event) => setIfMin(event.target.value)}
+                placeholder="最小 IF"
+                className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none"
+                aria-label="最小 IF"
+              />
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={ifMax}
+                onChange={(event) => setIfMax(event.target.value)}
+                placeholder="最大 IF"
+                className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none"
+                aria-label="最大 IF"
+              />
+              <input
                 type="date"
                 value={fromDate}
                 onChange={(event) => setFromDate(event.target.value)}
@@ -267,6 +325,7 @@ export function LiteratureSearchPage() {
               {initialQ ? <span className="rounded-full bg-slate-100 px-3 py-1">关键词：{initialQ}</span> : null}
               {initialTier ? <span className="rounded-full bg-slate-100 px-3 py-1">分层：{initialTier}</span> : null}
               {initialOa ? <span className="rounded-full bg-slate-100 px-3 py-1">仅 OA</span> : null}
+              {ifRangeLabel ? <span className="rounded-full bg-slate-100 px-3 py-1">{ifRangeLabel}</span> : null}
               {initialFrom ? <span className="rounded-full bg-slate-100 px-3 py-1">开始：{initialFrom}</span> : null}
               {initialTo ? <span className="rounded-full bg-slate-100 px-3 py-1">结束：{initialTo}</span> : null}
             </div>
@@ -315,6 +374,12 @@ export function LiteratureSearchPage() {
                       {item.quality_tier}
                     </span>
                   ) : null}
+                  <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-sky-700">
+                    IF {formatIf(item.journal_if)}
+                  </span>
+                  <span className="rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-violet-700">
+                    中科院分区 {item.journal_cas_zone?.trim() || "暂无"}
+                  </span>
                   <span>{item.publication_date ?? "日期未知"}</span>
                   <span>{item.is_open_access ? "Open Access" : "Closed Access"}</span>
                 </div>

@@ -2,22 +2,30 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { createClient } from "@supabase/supabase-js";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { Brain, Search, Stethoscope } from "lucide-react";
+import {
+  buildRedirectTarget,
+  buildSignInPath,
+  buildSignUpPath,
+  isAuthPagePath,
+} from "@/lib/auth-navigation";
+import { getBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 export function Navbar() {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = React.useState(true);
   const [email, setEmail] = React.useState<string | null>(null);
-
-  const supabase = React.useMemo(() => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !anon) return null;
-    return createClient(url, anon);
-  }, []);
+  const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
+  const authRedirect = React.useMemo(() => {
+    if (isAuthPagePath(pathname)) {
+      return "/";
+    }
+    return buildRedirectTarget(pathname, searchParams.toString());
+  }, [pathname, searchParams]);
 
   React.useEffect(() => {
     if (!supabase) {
@@ -44,9 +52,9 @@ export function Navbar() {
     if (!supabase) return;
     await supabase.auth.signOut();
     setEmail(null);
-    router.push("/signin");
+    router.push(buildSignInPath(authRedirect));
     router.refresh();
-  }, [router, supabase]);
+  }, [authRedirect, router, supabase]);
 
   return (
     <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200">
@@ -86,9 +94,14 @@ export function Navbar() {
         <div className="flex items-center gap-4">
           {!loading && email ? (
             <>
-              <span className="hidden md:inline text-xs text-slate-500">{email}</span>
-              <Link href="/settings" className="text-sm font-medium text-slate-600 hover:text-slate-900">
-                Settings
+              <span className="hidden rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600 md:inline">
+                {email}
+              </span>
+              <Link
+                href="/settings"
+                className="text-sm font-medium text-slate-600 hover:text-slate-900"
+              >
+                个人设置
               </Link>
               <button
                 type="button"
@@ -98,16 +111,29 @@ export function Navbar() {
                 登出
               </button>
             </>
+          ) : loading ? (
+            <span className="hidden h-9 w-24 animate-pulse rounded-full bg-slate-100 md:inline-block" />
           ) : (
-            <Link href="/signin" className="text-sm font-medium text-slate-600 hover:text-slate-900">
-              Sign in
-            </Link>
+            <>
+              <Link
+                href={buildSignInPath(authRedirect)}
+                className="text-sm font-medium text-slate-600 hover:text-slate-900"
+              >
+                登录
+              </Link>
+              <Link
+                href={buildSignUpPath(authRedirect)}
+                className="text-sm font-medium text-slate-600 hover:text-slate-900"
+              >
+                注册
+              </Link>
+            </>
           )}
           <Link
-            href="/submit"
+            href={email ? "/settings" : buildSignInPath(authRedirect)}
             className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors"
           >
-            Get Started
+            {email ? "进入工作台" : "开始使用"}
           </Link>
         </div>
       </div>

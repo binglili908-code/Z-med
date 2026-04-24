@@ -2,7 +2,10 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { createClient } from "@supabase/supabase-js";
+import { useRouter } from "next/navigation";
+
+import { buildSignInPath } from "@/lib/auth-navigation";
+import { getBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 type UserSubscription = {
   subscription_enabled: boolean;
@@ -11,6 +14,7 @@ type UserSubscription = {
 };
 
 export default function SettingsPage() {
+  const router = useRouter();
   const [loading, setLoading] = React.useState(true);
   const [email, setEmail] = React.useState<string | null>(null);
   const [token, setToken] = React.useState<string | null>(null);
@@ -22,12 +26,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
 
-  const supabase = React.useMemo(() => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !anon) return null;
-    return createClient(url, anon);
-  }, []);
+  const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
 
   React.useEffect(() => {
     async function init() {
@@ -62,6 +61,12 @@ export default function SettingsPage() {
     }
     void init();
   }, [supabase]);
+
+  React.useEffect(() => {
+    if (!loading && !email && supabase) {
+      router.replace(buildSignInPath("/settings"));
+    }
+  }, [email, loading, router, supabase]);
 
   const addKeyword = React.useCallback(() => {
     const value = keywordInput.trim();
@@ -128,8 +133,11 @@ export default function SettingsPage() {
     return (
       <main className="max-w-4xl mx-auto px-6 pt-10 pb-20">
         <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Settings</h1>
-        <p className="mt-4 text-slate-600">请先登录后再访问个人设置。</p>
-        <Link href="/signin" className="mt-4 inline-block text-sm font-semibold text-slate-900 underline">
+        <p className="mt-4 text-slate-600">未登录，正在跳转到登录页。</p>
+        <Link
+          href={buildSignInPath("/settings")}
+          className="mt-4 inline-block text-sm font-semibold text-slate-900 underline"
+        >
           前往登录
         </Link>
       </main>
@@ -140,6 +148,13 @@ export default function SettingsPage() {
     <main className="max-w-4xl mx-auto px-6 pt-10 pb-20">
       <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Settings</h1>
       <p className="mt-3 text-slate-600">当前登录账号：{email}</p>
+      <p className="mt-2 text-sm text-slate-500">
+        如需更新登录密码，可前往{" "}
+        <Link href="/reset-password" className="font-medium text-slate-900 underline">
+          重置密码
+        </Link>
+        。
+      </p>
       <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6">
         <h2 className="text-xl font-bold text-slate-900">订阅偏好</h2>
         <p className="mt-2 text-sm text-slate-600">填写关键词和期刊名，系统会按你的输入筛选文献。</p>

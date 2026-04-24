@@ -16,6 +16,8 @@ type SearchPaperRow = {
   abstract: string | null;
   abstract_zh: string | null;
   journal: string | null;
+  journal_if: number | null;
+  journal_cas_zone: string | null;
   publication_date: string | null;
   pubmed_url: string | null;
   is_open_access: boolean | null;
@@ -35,6 +37,20 @@ function normalizeSearchTerms(q: string) {
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
   return Array.from(new Set(list));
+}
+
+function parseNonNegativeNumber(value: string | null) {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function normalizeIfRange(min: number | null, max: number | null) {
+  if (min != null && max != null && min > max) {
+    return { min: max, max: min };
+  }
+  return { min, max };
 }
 
 function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
@@ -62,6 +78,9 @@ export async function GET(req: Request) {
   const from = (searchParams.get("from") ?? "").trim();
   const to = (searchParams.get("to") ?? "").trim();
   const oa = (searchParams.get("oa") ?? "").trim().toLowerCase();
+  const rawIfMin = parseNonNegativeNumber(searchParams.get("ifMin"));
+  const rawIfMax = parseNonNegativeNumber(searchParams.get("ifMax"));
+  const ifRange = normalizeIfRange(rawIfMin, rawIfMax);
   const page = clamp(Number(searchParams.get("page") ?? 1) || 1, 1, 1000);
   const pageSize = clamp(Number(searchParams.get("pageSize") ?? 20) || 20, 1, 50);
   const fromIndex = (page - 1) * pageSize;
@@ -70,7 +89,7 @@ export async function GET(req: Request) {
   let query = supabase
     .from("papers")
     .select(
-      "id,title,title_zh,abstract,abstract_zh,journal,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms",
+      "id,title,title_zh,abstract,abstract_zh,journal,journal_if,journal_cas_zone,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms",
     )
     .eq("is_ai_med", true);
 
@@ -86,6 +105,12 @@ export async function GET(req: Request) {
   }
   if (oa === "true") {
     query = query.eq("is_open_access", true);
+  }
+  if (ifRange.min != null) {
+    query = query.gte("journal_if", ifRange.min);
+  }
+  if (ifRange.max != null) {
+    query = query.lte("journal_if", ifRange.max);
   }
 
   const { data, error } = await query

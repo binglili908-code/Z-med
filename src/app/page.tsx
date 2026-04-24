@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import { DailyPaperModule } from "@/components/home/daily-paper-module";
 import { HomeSearchBar } from "@/components/home/home-search-bar";
 
@@ -16,8 +18,9 @@ export default function Home() {
         </p>
         <HomeSearchBar />
       </header>
-
-      <DailyPaperModule />
+      <Suspense fallback={<div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">推荐流加载中...</div>}>
+        <DailyPaperModule />
+      </Suspense>
     </main>
   );
 }

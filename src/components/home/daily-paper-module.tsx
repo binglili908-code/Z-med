@@ -3,8 +3,12 @@
 import * as React from "react";
 
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Clock, Sparkles } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
+
+import { buildRedirectTarget, buildSignInPath } from "@/lib/auth-navigation";
+import { DEV_PANEL_EMAIL, isDevPanelEmail } from "@/lib/dev-admin";
 
 type FeedPaper = {
   id: string;
@@ -54,6 +58,11 @@ type SendApiResponse = {
 
 type SelfCheckResponse = {
   ok?: boolean;
+  actor?: {
+    mode?: "email" | "dev-bypass";
+    email?: string | null;
+    userId?: string | null;
+  };
   checks?: {
     bypassEnabled?: boolean;
     seedEmail?: string | null;
@@ -85,6 +94,17 @@ type WeeklyPushApiResponse = {
   sentCount?: number;
   skippedRepeatedUsers?: number;
   skippedNoMatchUsers?: number;
+};
+
+type WeeklySpotlightCronApiResponse = {
+  ok?: boolean;
+  error?: string;
+  issueWeekStart?: string;
+  sentCount?: number;
+  failedCount?: number;
+  skippedRepeatedUsers?: number;
+  skippedProcessingUsers?: number;
+  skippedFailedUsers?: number;
 };
 
 type DailyPaperView = {
@@ -171,6 +191,16 @@ const fallbackPaper: DailyPaperView = {
 };
 
 export function DailyPaperModule() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const supabase = React.useMemo(() => {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anon) return null;
+    return createClient(url, anon);
+  }, []);
+
   const [paper, setPaper] = React.useState<DailyPaperView>(fallbackPaper);
   const [items, setItems] = React.useState<DailyPaperView[]>([]);
   const [browseEnabled, setBrowseEnabled] = React.useState(false);
@@ -180,6 +210,7 @@ export function DailyPaperModule() {
   const [browseLoading, setBrowseLoading] = React.useState(false);
   const [requiresLogin, setRequiresLogin] = React.useState(false);
   const [hasSubscription, setHasSubscription] = React.useState(false);
+  const [currentUserEmail, setCurrentUserEmail] = React.useState<string | null>(null);
   const [devBypassAuth, setDevBypassAuth] = React.useState(false);
   const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(null);
   const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(null);
@@ -193,18 +224,50 @@ export function DailyPaperModule() {
   const [syncMessage, setSyncMessage] = React.useState<string | null>(null);
   const [weeklyPushLoading, setWeeklyPushLoading] = React.useState(false);
   const [weeklyPushMessage, setWeeklyPushMessage] = React.useState<string | null>(null);
+  const [weeklySpotlightLoading, setWeeklySpotlightLoading] = React.useState(false);
+  const [weeklySpotlightMessage, setWeeklySpotlightMessage] = React.useState<string | null>(null);
   const [expandedSummaryIds, setExpandedSummaryIds] = React.useState<Record<string, boolean>>({});
+  const authRedirect = React.useMemo(
+    () => buildRedirectTarget(pathname, searchParams.toString()),
+    [pathname, searchParams],
+  );
 
-  const getAccessToken = React.useCallback(async () => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !anon) return null;
-    const supabase = createClient(url, anon);
+  const getSessionInfo = React.useCallback(async () => {
+    if (!supabase) {
+      return { accessToken: null, email: null };
+    }
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    return session?.access_token ?? null;
-  }, []);
+    return {
+      accessToken: session?.access_token ?? null,
+      email: session?.user?.email ?? null,
+    };
+  }, [supabase]);
+
+  const getAccessToken = React.useCallback(async () => {
+    const { accessToken } = await getSessionInfo();
+    return accessToken;
+  }, [getSessionInfo]);
+
+  React.useEffect(() => {
+    if (!supabase) return;
+
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setCurrentUserEmail(data.session?.user?.email ?? null);
+    });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUserEmail(session?.user?.email ?? null);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.subscription.unsubscribe();
+    };
+  }, [supabase]);
 
   const loadFeed = React.useCallback(async () => {
     try {
@@ -282,13 +345,20 @@ export function DailyPaperModule() {
     void loadTranslateAvailability();
   }, [loadTranslateAvailability]);
 
+  const showDevPanel = isDevPanelEmail(currentUserEmail);
+
   const handleSendSpotlight = React.useCallback(async () => {
+    if (requiresLogin) {
+      router.push(buildSignInPath(authRedirect));
+      return;
+    }
+
     setDigestSendState("sending");
     setLastSendMessage(null);
     try {
       const token = await getAccessToken();
       if (!token && !devBypassAuth) {
-        setDigestSendState("error");
+        router.push(buildSignInPath(authRedirect));
         return;
       }
       const res = await fetch("/api/send-spotlight-email", {
@@ -324,7 +394,7 @@ export function DailyPaperModule() {
       setLastSendMessage("请求异常：若邮箱已收到可忽略并刷新页面确认状态");
       setDigestSendState("error");
     }
-  }, [devBypassAuth, getAccessToken]);
+  }, [authRedirect, devBypassAuth, getAccessToken, requiresLogin, router]);
 
   const digestButtonLabel = React.useCallback(() => {
     if (digestSendState === "sending") return "发送中…";
@@ -371,7 +441,15 @@ export function DailyPaperModule() {
     setSelfCheckLoading(true);
     setSelfCheckMessage(null);
     try {
-      const res = await fetch("/api/dev/self-check", { cache: "no-store" });
+      const token = await getAccessToken();
+      if (!token) {
+        setSelfCheckMessage(`请先使用 ${DEV_PANEL_EMAIL} 登录后再执行自检。`);
+        return;
+      }
+      const res = await fetch("/api/dev/self-check", {
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const payload = (await res.json()) as SelfCheckResponse;
       if (!res.ok) {
         setSelfCheckMessage(payload.error ?? "自检失败");
@@ -392,15 +470,21 @@ export function DailyPaperModule() {
     } finally {
       setSelfCheckLoading(false);
     }
-  }, []);
+  }, [getAccessToken]);
 
   const handleSyncNow = React.useCallback(async () => {
     setSyncLoading(true);
     setSyncMessage(null);
     try {
+      const token = await getAccessToken();
+      if (!token) {
+        setSyncMessage(`请先使用 ${DEV_PANEL_EMAIL} 登录后再执行同步。`);
+        return;
+      }
       const res = await fetch("/api/cron/pubmed-sync", {
         method: "GET",
         cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` },
       });
       const payload = (await res.json()) as SyncApiResponse;
       if (!res.ok || !payload.ok) {
@@ -416,15 +500,21 @@ export function DailyPaperModule() {
     } finally {
       setSyncLoading(false);
     }
-  }, [loadFeed]);
+  }, [getAccessToken, loadFeed]);
 
   const handleWeeklyPushNow = React.useCallback(async () => {
     setWeeklyPushLoading(true);
     setWeeklyPushMessage(null);
     try {
+      const token = await getAccessToken();
+      if (!token) {
+        setWeeklyPushMessage(`请先使用 ${DEV_PANEL_EMAIL} 登录后再触发 weekly-push。`);
+        return;
+      }
       const res = await fetch("/api/cron/weekly-push", {
         method: "GET",
         cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` },
       });
       const payload = (await res.json()) as WeeklyPushApiResponse;
       if (!res.ok || !payload.ok) {
@@ -439,7 +529,41 @@ export function DailyPaperModule() {
     } finally {
       setWeeklyPushLoading(false);
     }
-  }, []);
+  }, [getAccessToken]);
+
+  const handleWeeklySpotlightNow = React.useCallback(async () => {
+    const token = await getAccessToken();
+    const targetEmail = currentUserEmail ?? DEV_PANEL_EMAIL;
+    if (!token) {
+      setWeeklySpotlightMessage(`请先使用 ${DEV_PANEL_EMAIL} 登录后再触发首页精选周邮件。`);
+      return;
+    }
+    setWeeklySpotlightLoading(true);
+    setWeeklySpotlightMessage(null);
+    try {
+      const search = new URLSearchParams({
+        email: targetEmail,
+        limit: "1",
+      });
+      const res = await fetch(`/api/cron/weekly-spotlight-email?${search.toString()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = (await res.json()) as WeeklySpotlightCronApiResponse;
+      if (!res.ok || !payload.ok) {
+        setWeeklySpotlightMessage(payload.error ?? "首页精选周邮件触发失败");
+        return;
+      }
+      setWeeklySpotlightMessage(
+        `首页精选周邮件已完成：周起始 ${payload.issueWeekStart ?? "未知"}，发送 ${payload.sentCount ?? 0} 人，跳过重复 ${payload.skippedRepeatedUsers ?? 0} 人，处理中 ${payload.skippedProcessingUsers ?? 0} 人，保留失败 ${payload.skippedFailedUsers ?? 0} 人，失败 ${payload.failedCount ?? 0} 人。`,
+      );
+    } catch {
+      setWeeklySpotlightMessage("首页精选周邮件请求失败");
+    } finally {
+      setWeeklySpotlightLoading(false);
+    }
+  }, [currentUserEmail, getAccessToken]);
 
   const handleExpandBrowse = React.useCallback(async () => {
     setBrowseEnabled(true);
@@ -536,7 +660,10 @@ export function DailyPaperModule() {
       {requiresLogin ? (
         <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
           个性化订阅和邮件发送功能需登录后使用。{" "}
-          <Link href="/signin" className="font-semibold text-slate-900 underline">
+          <Link
+            href={buildSignInPath(authRedirect)}
+            className="font-semibold text-slate-900 underline"
+          >
             请先登录
           </Link>
         </div>
@@ -617,15 +744,15 @@ export function DailyPaperModule() {
       <div className="mb-4">
         <button
           type="button"
-          disabled={requiresLogin || digestSendState === "sending" || digestSendState === "sent"}
+          disabled={digestSendState === "sending" || digestSendState === "sent"}
           onClick={handleSendSpotlight}
           className="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-slate-800 transition-colors"
         >
-          {digestButtonLabel()}
+          {requiresLogin ? "登录后发送到我的邮箱" : digestButtonLabel()}
         </button>
         {requiresLogin ? (
           <p className="mt-2 text-xs text-slate-500">
-            登录后可按你的订阅词个性化推送并发送全文。请先登录。
+            登录后可按你的订阅词个性化推送并发送全文，点击按钮会先跳转登录。
           </p>
         ) : null}
         {!requiresLogin && devBypassAuth ? (
@@ -839,10 +966,12 @@ export function DailyPaperModule() {
         </div>
       ) : null}
 
-      {devBypassAuth ? (
+      {showDevPanel ? (
         <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
           <div className="font-semibold">开发工具小面板</div>
-          <div className="mt-1">免登录开关：已开启</div>
+          <div className="mt-1">当前登录邮箱：{currentUserEmail ?? "未登录"}</div>
+          <div className="mt-1">授权邮箱：{DEV_PANEL_EMAIL}</div>
+          <div className="mt-1">免登录开关：{devBypassAuth ? "已开启" : "未开启"}</div>
           <div className="mt-1">当前旁路用户ID：{devBypassUserId ?? "未解析（请检查 DEV_BYPASS_USER_ID）"}</div>
           <div className="mt-1">种子邮箱：{devBypassSeedEmail ?? "未设置"}</div>
           <div className="mt-1">最近一次发送结果：{lastSendMessage ?? "暂无"}</div>
@@ -876,9 +1005,20 @@ export function DailyPaperModule() {
               {weeklyPushLoading ? "weekly-push 执行中…" : "一键触发 weekly-push"}
             </button>
           </div>
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={handleWeeklySpotlightNow}
+              disabled={weeklySpotlightLoading}
+              className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-amber-100"
+            >
+              {weeklySpotlightLoading ? "首页精选周邮件执行中…" : "一键触发首页精选周邮件"}
+            </button>
+          </div>
           <div className="mt-2">{selfCheckMessage ?? "点击按钮检查用户解析、OA文献与邮件配置。"}</div>
           <div className="mt-1">{syncMessage ?? "点击按钮触发同步任务并自动刷新文献列表。"}</div>
           <div className="mt-1">{weeklyPushMessage ?? "适合无命令行场景，点击后直接显示周推送执行结果。"}</div>
+          <div className="mt-1">{weeklySpotlightMessage ?? "首页精选周邮件默认仅投递当前授权邮箱，便于手动验收。"}</div>
         </div>
       ) : null}
     </div>
