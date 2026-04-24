@@ -44,6 +44,9 @@ function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
     paper.title_zh ?? "",
     paper.abstract ?? "",
     paper.abstract_zh ?? "",
+    paper.journal ?? "",
+    ...(paper.keywords ?? []),
+    ...(paper.mesh_terms ?? []),
   ]
     .join("\n")
     .toLowerCase();

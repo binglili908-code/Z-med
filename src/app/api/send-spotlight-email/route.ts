@@ -34,8 +34,12 @@ async function resolveBypassUserId(service: ReturnType<typeof createServiceSupab
 }
 
 function buildDigestHtml(items: Awaited<ReturnType<typeof buildSpotlightPapers>>["items"]) {
-  const baseUrl = process.env.APP_BASE_URL?.trim() || "https://trae73v9r64b.vercel.app";
-  const logoUrl = `${baseUrl}/api/brand/logo`;
+  const baseUrl =
+    process.env.APP_BASE_URL?.trim() ||
+    process.env.NEXT_PUBLIC_SITE_URL?.trim() ||
+    "https://zlab-med.com";
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  const logoUrl = `${normalizedBaseUrl}/api/brand/logo`;
   const rows = items
     .map(
       (item, index) => `

@@ -1,17 +1,11 @@
-import { Container } from "@/components/site/container";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Suspense } from "react";
+
+import { LiteratureSearchPage } from "@/components/literature/literature-search-page";
 
 export default function LiteratureTrendsPage() {
   return (
-    <Container className="py-10">
-      <Card>
-        <CardHeader>
-          <CardTitle>文献风向标</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm text-slate-600">
-          数据接入占位：这里将展示最新高引、热点方向与标签聚合视图。
-        </CardContent>
-      </Card>
-    </Container>
+    <Suspense fallback={<div className="mx-auto max-w-7xl px-6 py-10 text-sm text-slate-500">文献库加载中...</div>}>
+      <LiteratureSearchPage />
+    </Suspense>
   );
 }

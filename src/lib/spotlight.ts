@@ -20,6 +20,7 @@ type DbPaper = {
 };
 
 type ProfileRow = {
+  is_active: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
 };
@@ -133,13 +134,16 @@ export async function buildSpotlightPapers(params: {
   if (userId) {
     const { data: profile } = await service
       .from("profiles")
-      .select("subscription_keywords,custom_journals")
+      .select("is_active,subscription_keywords,custom_journals")
       .eq("id", userId)
       .maybeSingle();
     const p = profile as ProfileRow | null;
-    for (const kw of normalizeList(p?.subscription_keywords)) keywords.push(kw);
-    for (const j of normalizeList(p?.custom_journals)) journalTerms.add(j);
-    hasProfileConfig = Boolean(journalTerms.size || keywords.length);
+    const subscriptionEnabled = p?.is_active !== false;
+    if (subscriptionEnabled) {
+      for (const kw of normalizeList(p?.subscription_keywords)) keywords.push(kw);
+      for (const j of normalizeList(p?.custom_journals)) journalTerms.add(j);
+      hasProfileConfig = Boolean(journalTerms.size || keywords.length);
+    }
   }
 
   const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);

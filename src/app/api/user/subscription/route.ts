@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type UserSubscription = {
+  subscription_enabled: boolean;
   custom_journals: string[];
   keywords: string[];
 };
@@ -44,7 +45,7 @@ export async function GET(req: Request) {
 
   const { data: profile, error: profileErr } = await userClient
     .from("profiles")
-    .select("subscription_keywords, custom_journals")
+    .select("subscription_keywords, custom_journals, is_active")
     .eq("id", user.id)
     .maybeSingle();
   if (profileErr) {
@@ -52,6 +53,7 @@ export async function GET(req: Request) {
   }
 
   const payload: UserSubscription = {
+    subscription_enabled: profile?.is_active !== false,
     custom_journals: normalizeStringList(profile?.custom_journals),
     keywords: normalizeStringList(profile?.subscription_keywords),
   };
@@ -83,12 +85,14 @@ export async function PUT(req: Request) {
 
   const customJournals = normalizeStringList(body.custom_journals);
   const keywords = normalizeStringList(body.keywords);
+  const subscriptionEnabled = body.subscription_enabled !== false;
 
   const { error: profileErr } = await userClient
     .from("profiles")
     .upsert(
       {
         id: user.id,
+        is_active: subscriptionEnabled,
         subscription_keywords: keywords,
         custom_journals: customJournals,
         updated_at: new Date().toISOString(),
@@ -101,6 +105,7 @@ export async function PUT(req: Request) {
 
   return NextResponse.json({
     ok: true,
+    subscription_enabled: subscriptionEnabled,
     custom_journals: customJournals,
     keywords,
   });

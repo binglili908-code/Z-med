@@ -75,6 +75,18 @@ type SyncApiResponse = {
   aiMedCount?: number;
 };
 
+type WeeklyPushApiResponse = {
+  ok?: boolean;
+  error?: string;
+  issueId?: string;
+  weekStart?: string;
+  weekEnd?: string;
+  selectedCount?: number;
+  sentCount?: number;
+  skippedRepeatedUsers?: number;
+  skippedNoMatchUsers?: number;
+};
+
 type DailyPaperView = {
   id: string;
   title: string;
@@ -171,7 +183,7 @@ export function DailyPaperModule() {
   const [devBypassAuth, setDevBypassAuth] = React.useState(false);
   const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(null);
   const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(null);
-  const [hasByok, setHasByok] = React.useState(false);
+  const [canTranslate, setCanTranslate] = React.useState(false);
   const [digestSendState, setDigestSendState] = React.useState<"idle" | "sending" | "sent" | "error">("idle");
   const [translateState, setTranslateState] = React.useState<Record<string, "idle" | "translating" | "done" | "error">>({});
   const [lastSendMessage, setLastSendMessage] = React.useState<string | null>(null);
@@ -179,6 +191,8 @@ export function DailyPaperModule() {
   const [selfCheckMessage, setSelfCheckMessage] = React.useState<string | null>(null);
   const [syncLoading, setSyncLoading] = React.useState(false);
   const [syncMessage, setSyncMessage] = React.useState<string | null>(null);
+  const [weeklyPushLoading, setWeeklyPushLoading] = React.useState(false);
+  const [weeklyPushMessage, setWeeklyPushMessage] = React.useState<string | null>(null);
   const [expandedSummaryIds, setExpandedSummaryIds] = React.useState<Record<string, boolean>>({});
 
   const getAccessToken = React.useCallback(async () => {
@@ -223,25 +237,12 @@ export function DailyPaperModule() {
     }
   }, [getAccessToken]);
 
-  const loadByokStatus = React.useCallback(async () => {
+  const loadTranslateAvailability = React.useCallback(async () => {
     try {
       const token = await getAccessToken();
-      if (!token) {
-        setHasByok(false);
-        return;
-      }
-      const res = await fetch("/api/user/ai-settings", {
-        cache: "no-store",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        setHasByok(false);
-        return;
-      }
-      const json = (await res.json()) as { apiKeyMasked?: string | null; ai_digest_enabled?: boolean };
-      setHasByok(Boolean(json.apiKeyMasked) && Boolean(json.ai_digest_enabled ?? true));
+      setCanTranslate(Boolean(token));
     } catch {
-      setHasByok(false);
+      setCanTranslate(false);
     }
   }, [getAccessToken]);
 
@@ -278,8 +279,8 @@ export function DailyPaperModule() {
   }, [loadFeed]);
 
   React.useEffect(() => {
-    void loadByokStatus();
-  }, [loadByokStatus]);
+    void loadTranslateAvailability();
+  }, [loadTranslateAvailability]);
 
   const handleSendSpotlight = React.useCallback(async () => {
     setDigestSendState("sending");
@@ -417,6 +418,29 @@ export function DailyPaperModule() {
     }
   }, [loadFeed]);
 
+  const handleWeeklyPushNow = React.useCallback(async () => {
+    setWeeklyPushLoading(true);
+    setWeeklyPushMessage(null);
+    try {
+      const res = await fetch("/api/cron/weekly-push", {
+        method: "GET",
+        cache: "no-store",
+      });
+      const payload = (await res.json()) as WeeklyPushApiResponse;
+      if (!res.ok || !payload.ok) {
+        setWeeklyPushMessage(payload.error ?? "weekly-push 触发失败");
+        return;
+      }
+      setWeeklyPushMessage(
+        `weekly-push 已完成：周期 ${payload.weekStart ?? "未知"} ~ ${payload.weekEnd ?? "未知"}，入选 ${payload.selectedCount ?? 0} 篇，发送 ${payload.sentCount ?? 0} 人，跳过重复 ${payload.skippedRepeatedUsers ?? 0} 人，无匹配 ${payload.skippedNoMatchUsers ?? 0} 人。`,
+      );
+    } catch {
+      setWeeklyPushMessage("weekly-push 请求失败");
+    } finally {
+      setWeeklyPushLoading(false);
+    }
+  }, []);
+
   const handleExpandBrowse = React.useCallback(async () => {
     setBrowseEnabled(true);
     await loadBrowse(1);
@@ -456,14 +480,20 @@ export function DailyPaperModule() {
         const token = await getAccessToken();
         if (!token) {
           setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
-          setLastSendMessage("请先登录再使用我的模型翻译。");
+          setLastSendMessage("请先登录后使用翻译功能。");
           return;
         }
         const res = await fetch(`/api/papers/${paperId}/translate`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
         });
-        const payload = (await res.json()) as { error?: string; title_zh?: string; abstract_zh?: string };
+        const payload = (await res.json()) as {
+          error?: string;
+          title_zh?: string;
+          abstract_zh?: string;
+          fallback_to_english?: boolean;
+          message?: string;
+        };
         if (!res.ok) {
           setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
           setLastSendMessage(payload.error ?? "翻译失败");
@@ -471,7 +501,9 @@ export function DailyPaperModule() {
         }
         applyTranslatedResult(paperId, payload.title_zh ?? "", payload.abstract_zh ?? "");
         setTranslateState((prev) => ({ ...prev, [paperId]: "done" }));
-        setLastSendMessage("已使用你的模型完成翻译。");
+        setLastSendMessage(
+          payload.message ?? (payload.fallback_to_english ? "模型不可用，已回退展示英文原文。" : "已完成中文翻译。"),
+        );
       } catch {
         setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
         setLastSendMessage("翻译请求失败");
@@ -570,14 +602,14 @@ export function DailyPaperModule() {
         >
           {isSummaryExpanded(paper.id) ? "收起摘要" : "摘要"}
         </button>
-        {hasByok ? (
+        {canTranslate ? (
           <button
             type="button"
             onClick={() => void handleTranslateWithMine(paper.id)}
             disabled={translateState[paper.id] === "translating"}
             className="ml-2 mt-1 rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
           >
-            {translateState[paper.id] === "translating" ? "翻译中..." : "用我的模型翻译"}
+            {translateState[paper.id] === "translating" ? "翻译中..." : "翻译为中文"}
           </button>
         ) : null}
       </div>
@@ -658,14 +690,14 @@ export function DailyPaperModule() {
                 >
                   {isSummaryExpanded(it.id) ? "收起摘要" : "摘要"}
                 </button>
-                {hasByok ? (
+                {canTranslate ? (
                   <button
                     type="button"
                     onClick={() => void handleTranslateWithMine(it.id)}
                     disabled={translateState[it.id] === "translating"}
                     className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    {translateState[it.id] === "translating" ? "翻译中..." : "用我的模型翻译"}
+                    {translateState[it.id] === "translating" ? "翻译中..." : "翻译为中文"}
                   </button>
                 ) : null}
               </div>
@@ -746,14 +778,14 @@ export function DailyPaperModule() {
                     >
                       {isSummaryExpanded(`browse-${it.id}`) ? "收起摘要" : "摘要"}
                     </button>
-                    {hasByok ? (
+                    {canTranslate ? (
                       <button
                         type="button"
                         onClick={() => void handleTranslateWithMine(it.id)}
                         disabled={translateState[it.id] === "translating"}
                         className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
                       >
-                        {translateState[it.id] === "translating" ? "翻译中..." : "用我的模型翻译"}
+                        {translateState[it.id] === "translating" ? "翻译中..." : "翻译为中文"}
                       </button>
                     ) : null}
                   </div>
@@ -834,8 +866,19 @@ export function DailyPaperModule() {
               {syncLoading ? "同步中…" : "一键抓取最新文献"}
             </button>
           </div>
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={handleWeeklyPushNow}
+              disabled={weeklyPushLoading}
+              className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-amber-100"
+            >
+              {weeklyPushLoading ? "weekly-push 执行中…" : "一键触发 weekly-push"}
+            </button>
+          </div>
           <div className="mt-2">{selfCheckMessage ?? "点击按钮检查用户解析、OA文献与邮件配置。"}</div>
           <div className="mt-1">{syncMessage ?? "点击按钮触发同步任务并自动刷新文献列表。"}</div>
+          <div className="mt-1">{weeklyPushMessage ?? "适合无命令行场景，点击后直接显示周推送执行结果。"}</div>
         </div>
       ) : null}
     </div>

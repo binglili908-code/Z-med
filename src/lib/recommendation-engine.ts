@@ -13,6 +13,7 @@ export interface RecommendationOutput {
 }
 
 type ProfileRow = {
+  is_active: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
 };
@@ -40,12 +41,17 @@ export async function generateRecommendations(
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("subscription_keywords,custom_journals")
+    .select("is_active,subscription_keywords,custom_journals")
     .eq("id", user_id)
     .maybeSingle();
 
-  const profileKeywords = normalizeKeywords((profile as ProfileRow | null)?.subscription_keywords);
-  const customJournals = normalizeKeywords((profile as ProfileRow | null)?.custom_journals);
+  const profileRow = profile as ProfileRow | null;
+  if (profileRow?.is_active === false) {
+    return [];
+  }
+
+  const profileKeywords = normalizeKeywords(profileRow?.subscription_keywords);
+  const customJournals = normalizeKeywords(profileRow?.custom_journals);
   const journalTerms = new Set<string>();
   for (const item of customJournals) {
     journalTerms.add(item);

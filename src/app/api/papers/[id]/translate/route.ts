@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { decryptText } from "@/lib/crypto-util";
-import { callLLM } from "@/lib/llm-client";
+import { callMiniMaxChat } from "@/lib/minimax";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
 
@@ -12,6 +11,37 @@ function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
   return m?.[1];
+}
+
+function stripMarkdownFence(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("```")) return trimmed;
+  return trimmed.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+}
+
+function parseTranslationResult(content: string) {
+  const cleaned = stripMarkdownFence(content);
+  try {
+    const parsed = JSON.parse(cleaned) as { title_zh?: unknown; abstract_zh?: unknown };
+    const titleZh = typeof parsed.title_zh === "string" && parsed.title_zh.trim() ? parsed.title_zh.trim() : null;
+    const abstractZh =
+      typeof parsed.abstract_zh === "string" && parsed.abstract_zh.trim() ? parsed.abstract_zh.trim() : null;
+    return { titleZh, abstractZh };
+  } catch {
+    const lines = cleaned
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const titleZh = lines[0] || null;
+    return {
+      titleZh,
+      abstractZh: cleaned || null,
+    };
+  }
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function POST(
@@ -40,55 +70,42 @@ export async function POST(
     return NextResponse.json({ ok: true, title_zh: paper.title_zh, abstract_zh: paper.abstract_zh });
   }
 
-  const { data: profile, error: profErr } = await service
-    .from("profiles")
-    .select("byok_provider,byok_api_key_encrypted,byok_model")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (profErr) return NextResponse.json({ error: profErr.message }, { status: 500 });
-  if (!profile?.byok_provider || !profile?.byok_api_key_encrypted || !profile?.byok_model) {
-    return NextResponse.json({ error: "BYOK not configured" }, { status: 400 });
-  }
-
-  let apiKey: string;
-  try {
-    apiKey = decryptText(profile.byok_api_key_encrypted);
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Decrypt failed" }, { status: 500 });
-  }
-
-  const systemPrompt =
-    "你是一位专业的医学翻译。请将以下英文论文标题与摘要翻译为准确、流畅的中文。仅输出中文内容。";
+  const systemPrompt = `你是一位专业的医学翻译。
+请把英文论文标题与摘要翻译成准确、自然、简洁的中文。
+必须仅输出 JSON，对象格式如下：
+{"title_zh":"...","abstract_zh":"..."}
+不要输出 Markdown、解释或额外字段。`;
   const userPrompt = `期刊：${paper.journal ?? "Unknown"}
 英文标题：${paper.title}
 英文摘要：${paper.abstract ?? "无摘要"}`;
 
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
+  let model = "MiniMax-Text-01";
   try {
-    const result = await callLLM({
-      provider: profile.byok_provider,
-      apiKey,
-      model: profile.byok_model,
+    const result = await callMiniMaxChat({
       systemPrompt,
       userPrompt,
       temperature: 0.1,
+      maxTokens: 2000,
     });
+    model = result.model;
     inputTokens = result.inputTokens;
     outputTokens = result.outputTokens;
 
-    const titleZh = result.content.split("\n")[0].slice(0, 120);
-    const abstractZh = result.content;
-    const update: Record<string, any> = { updated_at: new Date().toISOString() };
-    if (!paper.title_zh && titleZh) update.title_zh = titleZh;
-    if (!paper.abstract_zh && abstractZh) update.abstract_zh = abstractZh;
+    const parsed = parseTranslationResult(result.content);
+    const titleZh = (paper.title_zh || parsed.titleZh || paper.title || "").slice(0, 120);
+    const abstractZh = paper.abstract_zh || parsed.abstractZh || paper.abstract || "No abstract available.";
+    const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (!paper.title_zh && parsed.titleZh) update.title_zh = parsed.titleZh.slice(0, 120);
+    if (!paper.abstract_zh && parsed.abstractZh) update.abstract_zh = parsed.abstractZh;
     await service.from("papers").update(update).eq("id", paperId);
 
     await service.from("byok_usage_log").insert({
       user_id: user.id,
       paper_id: paperId,
-      provider: profile.byok_provider,
-      model: profile.byok_model,
+      provider: "minimax",
+      model,
       usage_type: "translate",
       input_tokens: inputTokens ?? null,
       output_tokens: outputTokens ?? null,
@@ -97,18 +114,24 @@ export async function POST(
     });
 
     return NextResponse.json({ ok: true, title_zh: titleZh, abstract_zh: abstractZh });
-  } catch (e: any) {
+  } catch (e: unknown) {
     await service.from("byok_usage_log").insert({
       user_id: user.id,
       paper_id: paperId,
-      provider: profile.byok_provider,
-      model: profile.byok_model,
+      provider: "minimax",
+      model,
       usage_type: "translate",
       input_tokens: inputTokens ?? null,
       output_tokens: outputTokens ?? null,
       status: "failed",
       created_at: new Date().toISOString(),
     });
-    return NextResponse.json({ error: e?.message || "Translate failed" }, { status: 400 });
+    return NextResponse.json({
+      ok: true,
+      title_zh: paper.title_zh || paper.title || "",
+      abstract_zh: paper.abstract_zh || paper.abstract || "No abstract available.",
+      fallback_to_english: true,
+      message: `翻译失败，已回退英文原文：${getErrorMessage(e)}`,
+    });
   }
 }

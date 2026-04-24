@@ -5,6 +5,7 @@ import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
 type UserSubscription = {
+  subscription_enabled: boolean;
   custom_journals: string[];
   keywords: string[];
 };
@@ -13,6 +14,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
   const [email, setEmail] = React.useState<string | null>(null);
   const [token, setToken] = React.useState<string | null>(null);
+  const [subscriptionEnabled, setSubscriptionEnabled] = React.useState(true);
   const [customJournals, setCustomJournals] = React.useState<string[]>([]);
   const [customJournalInput, setCustomJournalInput] = React.useState("");
   const [keywords, setKeywords] = React.useState<string[]>([]);
@@ -48,6 +50,7 @@ export default function SettingsPage() {
           ]);
           if (subRes.ok) {
             const subJson = (await subRes.json()) as UserSubscription;
+            setSubscriptionEnabled(subJson.subscription_enabled !== false);
             setCustomJournals(subJson.custom_journals ?? []);
             setKeywords(subJson.keywords ?? []);
           }
@@ -94,6 +97,7 @@ export default function SettingsPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
+          subscription_enabled: subscriptionEnabled,
           custom_journals: customJournals,
           keywords,
         } satisfies UserSubscription),
@@ -109,7 +113,7 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [customJournals, keywords, token]);
+  }, [customJournals, keywords, subscriptionEnabled, token]);
 
 
   if (loading) {
@@ -139,6 +143,35 @@ export default function SettingsPage() {
       <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6">
         <h2 className="text-xl font-bold text-slate-900">订阅偏好</h2>
         <p className="mt-2 text-sm text-slate-600">填写关键词和期刊名，系统会按你的输入筛选文献。</p>
+
+        <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">订阅开关</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                关闭后保留你的关键词和期刊配置，但首页推荐与订阅推送回退为全局高分文献。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSubscriptionEnabled((prev) => !prev)}
+              className={`inline-flex h-7 w-12 items-center rounded-full border transition-colors ${
+                subscriptionEnabled ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-slate-300"
+              }`}
+              aria-pressed={subscriptionEnabled}
+              aria-label="切换订阅状态"
+            >
+              <span
+                className={`mx-0.5 inline-block h-5 w-5 rounded-full bg-white transition-transform ${
+                  subscriptionEnabled ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+          <p className="mt-3 text-xs font-medium text-slate-500">
+            当前状态：{subscriptionEnabled ? "已开启订阅" : "已关闭订阅"}
+          </p>
+        </div>
 
         <div className="mt-6">
           <h3 className="text-sm font-semibold text-slate-900">指定期刊（选填）</h3>

@@ -5,7 +5,11 @@ import { createServiceSupabaseClient } from "@/lib/supabase/service";
 type CandidatePaper = {
   id: string;
   title: string;
-  pubmed_url: string;
+  title_zh?: string | null;
+  abstract?: string | null;
+  abstract_zh?: string | null;
+  ai_analysis?: Record<string, unknown> | null;
+  pubmed_url: string | null;
   quality_score: number | null;
   quality_tier: string | null;
   publication_date: string | null;
@@ -14,10 +18,16 @@ type CandidatePaper = {
   mesh_terms: string[] | null;
 };
 
-type PaperTopicRelation = {
+type ProfileRow = {
+  id: string;
+  contact_email: string | null;
+  is_active: boolean | null;
+  subscription_keywords: string[] | null;
+  custom_journals: string[] | null;
+};
+
+type WeeklyDeliveryRow = {
   paper_id: string;
-  confidence: number | null;
-  research_topics: { slug: string } | null;
 };
 
 function startOfIsoWeek(date: Date) {
@@ -38,7 +48,7 @@ function buildDigestHtml(papers: CandidatePaper[]) {
       <li style="margin-bottom:12px;">
         <div><strong>${i + 1}. ${p.title}</strong></div>
         <div style="font-size:12px;color:#666;">${p.journal ?? "PubMed"} · ${p.publication_date ?? "N/A"} · score ${p.quality_score ?? 0}</div>
-        <div><a href="${p.pubmed_url}" target="_blank" rel="noreferrer">${p.pubmed_url}</a></div>
+        <div><a href="${p.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/"}" target="_blank" rel="noreferrer">${p.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/"}</a></div>
       </li>`,
     )
     .join("");
@@ -50,6 +60,15 @@ function buildDigestHtml(papers: CandidatePaper[]) {
   `;
 }
 
+function normalizeList(values: string[] | null | undefined) {
+  const set = new Set<string>();
+  for (const raw of values ?? []) {
+    const value = raw.trim().toLowerCase();
+    if (value) set.add(value);
+  }
+  return Array.from(set);
+}
+
 function normalizeTitle(title: string) {
   return title
     .toLowerCase()
@@ -58,66 +77,85 @@ function normalizeTitle(title: string) {
     .trim();
 }
 
-function diversifyCandidates(
-  candidates: CandidatePaper[],
-  maxCount: number,
-  paperTopicMap: Map<string, string[]>,
-) {
+function matchJournal(paper: CandidatePaper, journalTerms: string[]) {
+  if (!journalTerms.length) return true;
+  const journal = (paper.journal ?? "").trim().toLowerCase();
+  if (!journal) return false;
+  return journalTerms.some((term) => journal === term || journal.includes(term) || term.includes(journal));
+}
+
+function matchKeyword(paper: CandidatePaper, keywords: string[]) {
+  if (!keywords.length) return true;
+  const text = [
+    paper.title ?? "",
+    paper.title_zh ?? "",
+    paper.abstract ?? "",
+    paper.abstract_zh ?? "",
+    paper.journal ?? "",
+    (paper.keywords ?? []).join(" "),
+    (paper.mesh_terms ?? []).join(" "),
+    paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
+  ]
+    .join("\n")
+    .toLowerCase();
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function sortCandidates(candidates: CandidatePaper[]) {
+  return [...candidates].sort((a, b) => {
+    const scoreDiff = Number(b.quality_score ?? 0) - Number(a.quality_score ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return String(b.publication_date ?? "").localeCompare(String(a.publication_date ?? ""));
+  });
+}
+
+function diversifyCandidates(candidates: CandidatePaper[], maxCount: number) {
   const selected: CandidatePaper[] = [];
   const usedTitle = new Set<string>();
-  const topicCount = new Map<string, number>();
+  const journalCount = new Map<string, number>();
 
   for (const p of candidates) {
     const titleKey = normalizeTitle(p.title);
     if (usedTitle.has(titleKey)) continue;
-    const topics = paperTopicMap.get(p.id) ?? [];
-    const primary = topics[0] ?? "general";
-    if ((topicCount.get(primary) ?? 0) >= 1) continue;
+    const journalKey = (p.journal ?? "general").trim().toLowerCase() || "general";
+    if ((journalCount.get(journalKey) ?? 0) >= 1) continue;
     selected.push(p);
     usedTitle.add(titleKey);
-    topicCount.set(primary, (topicCount.get(primary) ?? 0) + 1);
+    journalCount.set(journalKey, (journalCount.get(journalKey) ?? 0) + 1);
     if (selected.length >= maxCount) return selected;
   }
 
   for (const p of candidates) {
     const titleKey = normalizeTitle(p.title);
     if (usedTitle.has(titleKey)) continue;
-    const topics = paperTopicMap.get(p.id) ?? [];
-    const primary = topics[0] ?? "general";
-    if ((topicCount.get(primary) ?? 0) >= 2) continue;
+    const journalKey = (p.journal ?? "general").trim().toLowerCase() || "general";
+    if ((journalCount.get(journalKey) ?? 0) >= 2) continue;
     selected.push(p);
     usedTitle.add(titleKey);
-    topicCount.set(primary, (topicCount.get(primary) ?? 0) + 1);
+    journalCount.set(journalKey, (journalCount.get(journalKey) ?? 0) + 1);
     if (selected.length >= maxCount) return selected;
   }
 
   return selected;
 }
 
-function ensureAtLeastThreeTopics(
-  selected: CandidatePaper[],
-  candidates: CandidatePaper[],
-  paperTopicMap: Map<string, string[]>,
-  maxCount: number,
-) {
-  const topicSet = new Set<string>();
-  for (const p of selected) {
-    const t = paperTopicMap.get(p.id)?.[0];
-    if (t) topicSet.add(t);
+function selectPersonalizedPool(candidates: CandidatePaper[], profile: ProfileRow) {
+  const keywords = normalizeList(profile.subscription_keywords);
+  const journals = normalizeList(profile.custom_journals);
+  const hasKeywords = keywords.length > 0;
+  const hasJournals = journals.length > 0;
+
+  const filtered = candidates.filter((paper) => {
+    if (hasJournals && !matchJournal(paper, journals)) return false;
+    if (hasKeywords && !matchKeyword(paper, keywords)) return false;
+    return true;
+  });
+
+  if (!filtered.length && (hasKeywords || hasJournals)) {
+    return [];
   }
-  if (topicSet.size >= 3 || selected.length >= maxCount) return selected;
-  const used = new Set(selected.map((x) => x.id));
-  for (const p of candidates) {
-    if (used.has(p.id)) continue;
-    const primary = paperTopicMap.get(p.id)?.[0];
-    if (!primary || topicSet.has(primary)) continue;
-    if (selected.length >= maxCount) break;
-    selected.push(p);
-    used.add(p.id);
-    topicSet.add(primary);
-    if (topicSet.size >= 3) break;
-  }
-  return selected.slice(0, maxCount);
+
+  return sortCandidates(filtered.length ? filtered : candidates);
 }
 
 export async function runWeeklyPushJob() {
@@ -133,44 +171,30 @@ export async function runWeeklyPushJob() {
 
   const { data: papers, error: paperErr } = await supabase
     .from("papers")
-    .select("id,title,pubmed_url,quality_score,quality_tier,publication_date,journal,keywords,mesh_terms")
+    .select(
+      "id,title,title_zh,abstract,abstract_zh,ai_analysis,pubmed_url,quality_score,quality_tier,publication_date,journal,keywords,mesh_terms",
+    )
     .eq("is_ai_med", true)
     .gte("publication_date", summaryStartStr)
     .lte("publication_date", summaryEndStr)
     .order("quality_score", { ascending: false })
     .order("ai_med_score", { ascending: false })
     .order("publication_date", { ascending: false })
-    .limit(30);
+    .limit(200);
   if (paperErr) throw new Error(`Load weekly papers failed: ${paperErr.message}`);
 
   const candidatesAll = (papers ?? []) as CandidatePaper[];
-  const paperIds = candidatesAll.map((p) => p.id);
-  const { data: relRows, error: relErr } = paperIds.length
-    ? await supabase
-        .from("paper_research_topics")
-        .select("paper_id,confidence,research_topics!inner(slug)")
-        .in("paper_id", paperIds)
-    : { data: [] as PaperTopicRelation[], error: null };
-  if (relErr) throw new Error(`Load paper research topics failed: ${relErr.message}`);
-
-  const paperTopicMap = new Map<string, string[]>();
-  for (const row of (relRows ?? []) as unknown as PaperTopicRelation[]) {
-    const slug = row.research_topics?.slug;
-    if (!slug) continue;
-    const curr = paperTopicMap.get(row.paper_id) ?? [];
-    curr.push(slug);
-    paperTopicMap.set(row.paper_id, curr);
-  }
-
-  const candidates = candidatesAll.filter(
+  const candidatePool = sortCandidates(
+    candidatesAll.filter(
     (p) => (p.quality_tier ?? "").toLowerCase() === "top" || (p.quality_score ?? 0) >= 0.72,
+    ),
   );
-  let selected = diversifyCandidates(candidates, 5, paperTopicMap);
-  selected = ensureAtLeastThreeTopics(selected, candidates, paperTopicMap, 5);
+  const selected = diversifyCandidates(candidatePool, 5);
 
   const issueMeta = {
     fromDate: summaryStartStr,
     toDate: summaryEndStr,
+    candidateCount: candidatePool.length,
     selectedCount: selected.length,
   };
 
@@ -204,26 +228,10 @@ export async function runWeeklyPushJob() {
 
   const { data: profiles, error: profileErr } = await supabase
     .from("profiles")
-    .select("id,contact_email,is_active")
+    .select("id,contact_email,is_active,subscription_keywords,custom_journals")
     .eq("is_active", true)
     .not("contact_email", "is", null);
   if (profileErr) throw new Error(`Load profiles failed: ${profileErr.message}`);
-
-  const profileIds = (profiles ?? []).map((p) => p.id);
-  const { data: subRows, error: subErr } = profileIds.length
-    ? await supabase
-        .from("user_topic_subscriptions")
-        .select("user_id,research_topics!inner(slug)")
-        .in("user_id", profileIds)
-    : { data: [], error: null };
-  if (subErr) throw new Error(`Load user topic subscriptions failed: ${subErr.message}`);
-
-  const userTopicMap = new Map<string, Set<string>>();
-  for (const row of (subRows ?? []) as Array<{ user_id: string; research_topics: { slug: string } }>) {
-    const s = userTopicMap.get(row.user_id) ?? new Set<string>();
-    s.add(row.research_topics.slug);
-    userTopicMap.set(row.user_id, s);
-  }
 
   const resendApiKey = process.env.RESEND_API_KEY;
   const resendFrom = process.env.RESEND_FROM_EMAIL;
@@ -233,19 +241,46 @@ export async function runWeeklyPushJob() {
   const resend = new Resend(resendApiKey);
 
   let sentCount = 0;
-  for (const p of profiles ?? []) {
+  let skippedRepeatedUsers = 0;
+  let skippedNoMatchUsers = 0;
+  for (const p of (profiles ?? []) as ProfileRow[]) {
     const to = String(p.contact_email || "").trim();
     if (!to) continue;
-    const subscribed = userTopicMap.get(p.id);
-    const personalizedCandidates =
-      subscribed && subscribed.size
-        ? candidates.filter((paper) => {
-            const topicSlugs = paperTopicMap.get(paper.id) ?? [];
-            return topicSlugs.some((x) => subscribed.has(x));
-          })
-        : candidates;
-    let personalized = diversifyCandidates(personalizedCandidates, 5, paperTopicMap);
-    personalized = ensureAtLeastThreeTopics(personalized, personalizedCandidates, paperTopicMap, 5);
+    const { data: alreadySentInIssue, error: issueDeliveryErr } = await supabase
+      .from("user_weekly_push_deliveries")
+      .select("paper_id")
+      .eq("issue_id", issueRow.id)
+      .eq("user_id", p.id)
+      .limit(1);
+    if (issueDeliveryErr) {
+      throw new Error(`Load weekly delivery status failed: ${issueDeliveryErr.message}`);
+    }
+    if ((alreadySentInIssue ?? []).length > 0) {
+      skippedRepeatedUsers += 1;
+      continue;
+    }
+
+    const personalizedCandidatesRaw = selectPersonalizedPool(candidatePool, p);
+    if (!personalizedCandidatesRaw.length) {
+      skippedNoMatchUsers += 1;
+      continue;
+    }
+
+    const personalizedCandidateIds = personalizedCandidatesRaw.map((x) => x.id);
+    const { data: deliveredRows, error: deliveredErr } = personalizedCandidateIds.length
+      ? await supabase
+          .from("user_weekly_push_deliveries")
+          .select("paper_id")
+          .eq("user_id", p.id)
+          .in("paper_id", personalizedCandidateIds)
+      : { data: [] as WeeklyDeliveryRow[], error: null };
+    if (deliveredErr) {
+      throw new Error(`Load user delivery history failed: ${deliveredErr.message}`);
+    }
+    const deliveredSet = new Set((deliveredRows ?? []).map((row) => row.paper_id));
+    const personalizedCandidates = personalizedCandidatesRaw.filter((paper) => !deliveredSet.has(paper.id));
+
+    const personalized = diversifyCandidates(personalizedCandidates, 5);
     if (!personalized.length) continue;
     const html = buildDigestHtml(personalized);
     const { error } = await resend.emails.send({
@@ -254,7 +289,22 @@ export async function runWeeklyPushJob() {
       subject: `每周 AI+医学精选（${summaryStartStr} ~ ${summaryEndStr}）`,
       html,
     });
-    if (!error) sentCount += 1;
+    if (!error) {
+      const deliveryRows = personalized.map((paper) => ({
+        issue_id: issueRow.id,
+        user_id: p.id,
+        paper_id: paper.id,
+        issue_week_start: summaryStartStr,
+        delivered_at: new Date().toISOString(),
+      }));
+      const { error: insertDeliveryErr } = await supabase
+        .from("user_weekly_push_deliveries")
+        .insert(deliveryRows);
+      if (insertDeliveryErr) {
+        throw new Error(`Record weekly delivery failed: ${insertDeliveryErr.message}`);
+      }
+      sentCount += 1;
+    }
   }
 
   await supabase
@@ -262,7 +312,7 @@ export async function runWeeklyPushJob() {
     .update({
       status: "sent",
       sent_at: new Date().toISOString(),
-      meta: { ...issueMeta, sentCount },
+      meta: { ...issueMeta, sentCount, skippedRepeatedUsers, skippedNoMatchUsers },
     })
     .eq("id", issueRow.id);
 
@@ -272,5 +322,7 @@ export async function runWeeklyPushJob() {
     weekEnd: summaryEndStr,
     selectedCount: selected.length,
     sentCount,
+    skippedRepeatedUsers,
+    skippedNoMatchUsers,
   };
 }

@@ -1,7 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { callMiniMaxChat, getMiniMaxApiKey } from "@/lib/minimax";
 
 type PaperRow = {
   id: string;
@@ -22,7 +20,7 @@ type QueueRow = {
   status: string;
 };
 
-const MODEL_NAME = "deepseek-chat";
+const MODEL_NAME = "MiniMax-Text-01";
 const MAX_BATCH_SIZE = 20;
 const SYSTEM_PROMPT = `你是一位专业的医学翻译。请将以下英文医学论文摘要翻译为准确、流畅的中文。
 要求：
@@ -31,122 +29,45 @@ const SYSTEM_PROMPT = `你是一位专业的医学翻译。请将以下英文医
 3. 不要添加任何解读、评论或总结，只做翻译
 4. 直接输出翻译后的中文文本，不要加引号或标记`;
 
-function readLocalEnvValue(name: string) {
-  if (process.env.NODE_ENV === "production") return null;
-  try {
-    const files = [
-      path.join(process.cwd(), ".env.local"),
-      path.join(process.cwd(), "zlab-web", ".env.local"),
-      path.join(__dirname, "..", "..", "..", ".env.local"),
-    ];
-    for (const file of files) {
-      if (!fs.existsSync(file)) continue;
-      const lines = fs.readFileSync(file, "utf-8").split(/\r?\n/);
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t || t.startsWith("#")) continue;
-        if (!t.startsWith(`${name}=`)) continue;
-        const value = t.slice(name.length + 1).trim();
-        if (value) return value;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function getDeepSeekApiKey() {
-  const runtimeKey = process.env.DEEPSEEK_API_KEY?.trim();
-  if (runtimeKey) return runtimeKey;
-  const localKey = readLocalEnvValue("DEEPSEEK_API_KEY");
-  if (localKey) return localKey;
-  return null;
-}
-
 function toQueuePriority(qualityScore: unknown) {
   const v = Number(qualityScore ?? 0);
   if (!Number.isFinite(v)) return 0;
   return Math.max(0, Math.round(v * 10000));
 }
 
-async function callDeepSeekAnalysis(paper: PaperRow) {
-  const apiKey = getDeepSeekApiKey();
-  if (!apiKey) {
-    throw new Error("Missing DEEPSEEK_API_KEY");
-  }
-
+async function callMiniMaxAnalysis(paper: PaperRow) {
   const userPrompt = `论文标题：${paper.title}
 期刊：${paper.journal ?? "Unknown"}
 摘要原文：${paper.abstract ?? "无摘要"}`;
 
-  const response = await fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: MODEL_NAME,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.1,
-    }),
-    cache: "no-store",
+  const response = await callMiniMaxChat({
+    model: MODEL_NAME,
+    systemPrompt: SYSTEM_PROMPT,
+    userPrompt,
+    temperature: 0.1,
+    maxTokens: 2400,
   });
-
-  if (!response.ok) {
-    const raw = await response.text();
-    throw new Error(`DeepSeek request failed: ${response.status} ${raw.slice(0, 200)}`);
-  }
-
-  const json = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content = json.choices?.[0]?.message?.content;
+  const content = response.content;
   if (!content) {
-    throw new Error("DeepSeek response has no content");
+    throw new Error("MiniMax response has no content");
   }
   return content.trim();
 }
 
-async function callDeepSeekTitle(title: string, journal: string | null) {
-  const apiKey = getDeepSeekApiKey();
-  if (!apiKey) {
-    throw new Error("Missing DEEPSEEK_API_KEY");
-  }
+async function callMiniMaxTitle(title: string, journal: string | null) {
   const system = `你是一位专业的医学翻译。请将下面英文论文标题翻译为准确、简洁的中文标题。仅输出中文标题，不要添加任何说明或标记。`;
   const user = `期刊：${journal ?? "Unknown"}
 英文标题：${title}`;
-  const res = await fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: MODEL_NAME,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.1,
-    }),
-    cache: "no-store",
+  const res = await callMiniMaxChat({
+    model: MODEL_NAME,
+    systemPrompt: system,
+    userPrompt: user,
+    temperature: 0.1,
+    maxTokens: 200,
   });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`DeepSeek title translate failed: ${txt.slice(0, 200)}`);
-  }
-  const json = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content =
-    json.choices?.[0]?.message?.content?.trim() ?? "";
+  const content = res.content?.trim() ?? "";
   if (!content) {
-    throw new Error("DeepSeek title response has no content");
+    throw new Error("MiniMax title response has no content");
   }
   return content.trim();
 }
@@ -208,7 +129,7 @@ async function ensurePlatformQueue(supabase: ReturnType<typeof createServiceSupa
 
 export async function runAiAnalysisCronJob() {
   const supabase = createServiceSupabaseClient();
-  const hasDeepseekApiKey = Boolean(getDeepSeekApiKey());
+  const hasMiniMaxApiKey = Boolean(getMiniMaxApiKey());
   const { enqueuedCount } = await ensurePlatformQueue(supabase);
 
   const { data: queueRows, error: queueErr } = await supabase
@@ -235,7 +156,8 @@ export async function runAiAnalysisCronJob() {
       completed: 0,
       failed: 0,
       model: MODEL_NAME,
-      hasDeepseekApiKey,
+      hasMiniMaxApiKey,
+      hasTranslationApiKey: hasMiniMaxApiKey,
     };
   }
 
@@ -277,14 +199,14 @@ export async function runAiAnalysisCronJob() {
       };
 
       if (!paper.abstract_zh) {
-        const translated = await callDeepSeekAnalysis(paper);
+        const translated = await callMiniMaxAnalysis(paper);
         updatePayload.abstract_zh = translated;
       }
 
       if (!paper.title_zh) {
         let titleZh: string | null = null;
         try {
-          titleZh = await callDeepSeekTitle(paper.title, paper.journal);
+          titleZh = await callMiniMaxTitle(paper.title, paper.journal);
         } catch {
           titleZh = null;
         }
@@ -333,7 +255,8 @@ export async function runAiAnalysisCronJob() {
     completed,
     failed,
     model: MODEL_NAME,
-    hasDeepseekApiKey,
+    hasMiniMaxApiKey,
+    hasTranslationApiKey: hasMiniMaxApiKey,
     failures,
   };
 }

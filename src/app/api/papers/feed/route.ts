@@ -35,6 +35,21 @@ type DbPaper = {
   recommendation_reason?: string | null;
 };
 
+type ProfileStatusRow = {
+  is_active: boolean | null;
+  subscription_keywords: string[] | null;
+  custom_journals: string[] | null;
+};
+
+function normalizeStringList(input: string[] | null | undefined) {
+  const set = new Set<string>();
+  for (const raw of input ?? []) {
+    const value = raw.trim();
+    if (value) set.add(value);
+  }
+  return Array.from(set);
+}
+
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
@@ -80,6 +95,24 @@ export async function GET(req: Request) {
     userId = await resolveBypassUserId(service);
   }
 
+  let subscriptionEnabled = false;
+  let hasSubscriptionConfig = false;
+  if (userId) {
+    const { data: profile } = await service
+      .from("profiles")
+      .select("is_active,subscription_keywords,custom_journals")
+      .eq("id", userId)
+      .maybeSingle();
+    const profileRow = profile as ProfileStatusRow | null;
+    subscriptionEnabled = profileRow?.is_active !== false;
+    hasSubscriptionConfig =
+      subscriptionEnabled &&
+      Boolean(
+        normalizeStringList(profileRow?.subscription_keywords).length ||
+          normalizeStringList(profileRow?.custom_journals).length,
+      );
+  }
+
   const mapPaper = (
     p: DbPaper & { recommendation_reason?: string | null; source_type?: "precision" | "trending" | "serendipity" },
     interactions: Map<string, { pdf_emailed_at: string | null }>,
@@ -115,7 +148,7 @@ export async function GET(req: Request) {
     pdf_emailed_at: interactions.get(p.id)?.pdf_emailed_at ?? null,
   });
 
-  if (userId) {
+  if (userId && hasSubscriptionConfig) {
     const { data: feedData, error: rpcErr } = await service.rpc("get_personalized_feed", {
       p_user_id: userId,
       p_page: page,
@@ -195,7 +228,7 @@ export async function GET(req: Request) {
     page,
     pageSize,
     personalized: false,
-    hasSubscription: false,
+    hasSubscription: hasSubscriptionConfig,
     requiresLogin: !userId && !isDevBypassAuthEnabled(),
     devBypassAuth: isDevBypassAuthEnabled(),
     devBypassUserId: isDevBypassAuthEnabled() ? userId : null,

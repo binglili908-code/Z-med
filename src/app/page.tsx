@@ -1,4 +1,5 @@
 import { DailyPaperModule } from "@/components/home/daily-paper-module";
+import { HomeSearchBar } from "@/components/home/home-search-bar";
 
 export default function Home() {
   return (
@@ -13,6 +14,7 @@ export default function Home() {
         <p className="text-lg text-slate-500 max-w-2xl">
           聚焦 AI 医疗文献检索、评分与推送，帮助你高效获取高价值新论文。
         </p>
+        <HomeSearchBar />
       </header>
 
       <DailyPaperModule />
