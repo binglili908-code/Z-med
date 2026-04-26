@@ -4,21 +4,17 @@ import {
   sendSpotlightDigestEmail,
 } from "@/lib/spotlight-email";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import {
+  createProcessingSpotlightDelivery,
+  deleteSpotlightDelivery,
+  listWeeklySpotlightProfiles,
+  loadExistingSpotlightDelivery,
+  markSpotlightDeliveryFailed,
+  markSpotlightDeliverySent,
+  type SpotlightTriggerSource,
+} from "@/server/repositories/weekly-spotlight-email";
 
-type ProfileRow = {
-  id: string;
-  contact_email: string | null;
-  is_active: boolean | null;
-};
-
-type DeliveryStatus = "processing" | "sent" | "failed";
-type TriggerSource = "cron" | "manual";
-
-type DeliveryRow = {
-  id: string;
-  status: DeliveryStatus;
-  last_error: string | null;
-};
+type TriggerSource = SpotlightTriggerSource;
 
 type RunWeeklySpotlightEmailJobOptions = {
   userId?: string | null;
@@ -73,105 +69,6 @@ function normalizeLimit(limit?: number | null) {
   return Math.min(Math.trunc(limit), 100);
 }
 
-async function loadExistingDelivery(
-  userId: string,
-  issueWeekStart: string,
-  service: ReturnType<typeof createServiceSupabaseClient>,
-) {
-  const { data, error } = await service
-    .from("user_weekly_spotlight_deliveries")
-    .select("id,status,last_error")
-    .eq("user_id", userId)
-    .eq("issue_week_start", issueWeekStart)
-    .maybeSingle();
-  if (error) {
-    throw new Error(`Load spotlight delivery failed: ${error.message}`);
-  }
-  return (data as DeliveryRow | null) ?? null;
-}
-
-async function createProcessingDelivery(params: {
-  userId: string;
-  emailTo: string;
-  issueWeekStart: string;
-  triggerSource: TriggerSource;
-  service: ReturnType<typeof createServiceSupabaseClient>;
-}) {
-  const { data, error } = await params.service
-    .from("user_weekly_spotlight_deliveries")
-    .insert({
-      user_id: params.userId,
-      email_to: params.emailTo,
-      issue_week_start: params.issueWeekStart,
-      status: "processing",
-      trigger_source: params.triggerSource,
-      updated_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (error) {
-    const code = (error as { code?: string }).code;
-    if (code === "23505") {
-      return null;
-    }
-    throw new Error(`Create spotlight delivery failed: ${error.message}`);
-  }
-
-  return data?.id ?? null;
-}
-
-async function markDeliveryFailed(
-  deliveryId: string,
-  errorMessage: string,
-  service: ReturnType<typeof createServiceSupabaseClient>,
-) {
-  const { error } = await service
-    .from("user_weekly_spotlight_deliveries")
-    .update({
-      status: "failed",
-      last_error: errorMessage,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", deliveryId);
-  if (error) {
-    throw new Error(`Update failed spotlight delivery failed: ${error.message}`);
-  }
-}
-
-async function markDeliverySent(params: {
-  deliveryId: string;
-  emailTo: string;
-  paperIds: string[];
-  triggerSource: TriggerSource;
-  service: ReturnType<typeof createServiceSupabaseClient>;
-}) {
-  const sentAt = new Date().toISOString();
-  const { error } = await params.service
-    .from("user_weekly_spotlight_deliveries")
-    .update({
-      status: "sent",
-      email_to: params.emailTo,
-      spotlight_count: params.paperIds.length,
-      paper_ids: params.paperIds,
-      trigger_source: params.triggerSource,
-      last_error: null,
-      sent_at: sentAt,
-      updated_at: sentAt,
-    })
-    .eq("id", params.deliveryId);
-  if (error) {
-    throw new Error(`Finalize spotlight delivery failed: ${error.message}`);
-  }
-}
-
-async function deleteDelivery(id: string, service: ReturnType<typeof createServiceSupabaseClient>) {
-  const { error } = await service.from("user_weekly_spotlight_deliveries").delete().eq("id", id);
-  if (error) {
-    throw new Error(`Delete failed spotlight delivery failed: ${error.message}`);
-  }
-}
-
 export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmailJobOptions = {}) {
   const service = createServiceSupabaseClient();
   const issueWeekStart = normalizeWeekStart(options.issueWeekStart);
@@ -180,26 +77,11 @@ export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmai
   const retryFailed = options.retryFailed === true;
   const triggerSource = options.triggerSource ?? "cron";
 
-  let query = service
-    .from("profiles")
-    .select("id,contact_email,is_active")
-    .eq("is_active", true)
-    .not("contact_email", "is", null);
-
-  if (options.userId?.trim()) {
-    query = query.eq("id", options.userId.trim());
-  }
-  if (options.email?.trim()) {
-    query = query.eq("contact_email", options.email.trim());
-  }
-  if (limit) {
-    query = query.limit(limit);
-  }
-
-  const { data: profiles, error: profileErr } = await query;
-  if (profileErr) {
-    throw new Error(`Load active profiles failed: ${profileErr.message}`);
-  }
+  const profiles = await listWeeklySpotlightProfiles(service, {
+    userId: options.userId,
+    email: options.email,
+    limit,
+  });
 
   const results: UserRunResult[] = [];
   let sentCount = 0;
@@ -208,12 +90,15 @@ export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmai
   let skippedFailedUsers = 0;
   let failedCount = 0;
 
-  for (const profile of (profiles ?? []) as ProfileRow[]) {
+  for (const profile of profiles) {
     const emailTo = String(profile.contact_email ?? "").trim();
     if (!emailTo) continue;
 
     if (!dryRun) {
-      const existing = await loadExistingDelivery(profile.id, issueWeekStart, service);
+      const existing = await loadExistingSpotlightDelivery(service, {
+        userId: profile.id,
+        issueWeekStart,
+      });
       if (existing?.status === "sent") {
         skippedRepeatedUsers += 1;
         results.push({
@@ -248,7 +133,7 @@ export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmai
           });
           continue;
         }
-        await deleteDelivery(existing.id, service);
+        await deleteSpotlightDelivery(service, existing.id);
       }
     }
 
@@ -278,12 +163,11 @@ export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmai
       continue;
     }
 
-    const deliveryId = await createProcessingDelivery({
+    const deliveryId = await createProcessingSpotlightDelivery(service, {
       userId: profile.id,
       emailTo,
       issueWeekStart,
       triggerSource,
-      service,
     });
 
     if (!deliveryId) {
@@ -304,15 +188,14 @@ export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmai
         subject: getWeeklySpotlightEmailSubject(issueWeekStart),
         items,
         heading: "本周首页精选 7 篇文献",
-        intro: "这是基于你当前首页推荐生成的本周 7 篇精选邮件，内容与首页保持同源，并按你的订阅偏好个性化排序。",
+        intro: "这是基于您当前首页推荐生成的本周 7 篇精选邮件，内容与首页保持同源，并按您的订阅偏好个性化排序。",
       });
 
-      await markDeliverySent({
+      await markSpotlightDeliverySent(service, {
         deliveryId,
         emailTo,
         paperIds,
         triggerSource,
-        service,
       });
 
       sentCount += 1;
@@ -325,7 +208,10 @@ export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmai
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown email error";
-      await markDeliveryFailed(deliveryId, message, service);
+      await markSpotlightDeliveryFailed(service, {
+        deliveryId,
+        errorMessage: message,
+      });
       failedCount += 1;
       results.push({
         userId: profile.id,
@@ -342,7 +228,7 @@ export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmai
     issueWeekStart,
     dryRun,
     triggerSource,
-    targetCount: (profiles ?? []).length,
+    targetCount: profiles.length,
     processedCount: results.length,
     sentCount,
     skippedRepeatedUsers,

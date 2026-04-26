@@ -1,39 +1,17 @@
-import { NextResponse } from "next/server";
-
 import { runAiAnalysisCronJob } from "@/lib/ai-analysis";
 import { runJournalSyncJob } from "@/lib/pubmed-sync";
-import { isDevBypassAuthEnabled } from "@/lib/supabase/env";
+import { runCronRoute } from "@/server/cron/run-cron-route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function isAuthorized(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  const auth = req.headers.get("authorization") ?? "";
-  return auth === `Bearer ${secret}`;
-}
-
 export async function GET(req: Request) {
-  if (!isDevBypassAuthEnabled() && !isAuthorized(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  try {
+  return runCronRoute(req, async () => {
     const result = await runJournalSyncJob();
     const aiResult = await runAiAnalysisCronJob();
-    return NextResponse.json({
-      ok: true,
-      devBypassAuth: isDevBypassAuthEnabled(),
+    return {
       ...result,
       aiAnalysis: aiResult,
-    });
-  } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 },
-    );
-  }
+    };
+  });
 }

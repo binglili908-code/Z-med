@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "db:export-contracts": "node src/scripts/export-db-contracts.mjs",
     "seed:journals": "npx tsx src/scripts/seed.ts",
     "seed:topics": "npx tsx src/scripts/seed-topics.ts"
   },
@@ -27,6 +28,7 @@
     "autoprefixer": "^10.4.20",
     "eslint": "^8.57.0",
     "eslint-config-next": "15.5.8",
+    "pg": "^8.20.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.4.5"

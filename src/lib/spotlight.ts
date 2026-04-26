@@ -1,63 +1,22 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import {
+  getPaperEmailInteractions,
+  listRecentQualityPapers,
+  mapPaperToPaperCard,
+  type DbPaper,
+} from "@/server/repositories/papers";
+import { getProfileSubscriptionStatus } from "@/server/repositories/profiles";
+import type { PaperCard, RecommendationSourceType } from "@/shared/contracts/papers";
 
-type DbPaper = {
-  id: string;
-  title: string;
-  title_zh?: string | null;
-  journal_if?: number | null;
-  journal_jcr?: string | null;
-  journal_cas_zone?: string | null;
-  abstract: string | null;
-  abstract_zh: string | null;
-  journal: string | null;
-  publication_date: string | null;
-  quality_score: number | null;
-  quality_tier: string | null;
-  pubmed_url: string | null;
-  is_open_access: boolean | null;
-  oa_pdf_url: string | null;
-  ai_analysis: Record<string, unknown> | null;
-};
+export type SpotlightSourceType = RecommendationSourceType;
 
-type ProfileRow = {
-  is_active: boolean | null;
-  subscription_keywords: string[] | null;
-  custom_journals: string[] | null;
-};
-
-export type SpotlightSourceType = "precision" | "trending" | "serendipity";
-
-export type SpotlightPaper = {
-  id: string;
-  title: string;
-  title_zh: string | null;
-  journal: string;
-  journal_if: number | null;
-  journal_jcr: string | null;
-  journal_cas_zone: string | null;
-  publication_date: string | null;
-  quality_score: number;
-  quality_tier: "top" | "core" | "emerging";
-  pubmed_url: string;
-  is_open_access: boolean;
-  oa_pdf_url: string | null;
-  abstract_zh: string | null;
-  ai_analysis: {
-    summary_zh: string;
-    background: string;
-    method: string;
-    value: string;
-  } | null;
-  source_type: SpotlightSourceType;
-  recommendation_reason: string | null;
-  pdf_emailed_at: string | null;
-};
+export type SpotlightPaper = PaperCard;
 
 function normalizeList(values: string[] | null | undefined) {
   const set = new Set<string>();
   for (const raw of values ?? []) {
-    const v = raw.trim().toLowerCase();
-    if (v) set.add(v);
+    const value = raw.trim().toLowerCase();
+    if (value) set.add(value);
   }
   return Array.from(set);
 }
@@ -69,55 +28,14 @@ function includesAnyKeyword(paper: DbPaper, keywords: string[]) {
     paper.title_zh ?? "",
     paper.abstract ?? "",
     paper.abstract_zh ?? "",
+    paper.journal ?? "",
+    (paper.keywords ?? []).join(" "),
+    (paper.mesh_terms ?? []).join(" "),
     paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
   ]
     .join("\n")
     .toLowerCase();
-  return keywords.some((kw) => text.includes(kw));
-}
-
-function toPaperOutput(
-  paper: DbPaper,
-  sourceType: SpotlightSourceType,
-  reason: string | null,
-  emailedAt: string | null,
-): SpotlightPaper {
-  return {
-    id: paper.id,
-    title: paper.title,
-    title_zh: paper.title_zh ?? null,
-    journal: paper.journal ?? "PubMed",
-    journal_if: paper.journal_if ?? null,
-    journal_jcr: paper.journal_jcr ?? null,
-    journal_cas_zone: paper.journal_cas_zone ?? null,
-    publication_date: paper.publication_date,
-    quality_score: Number(paper.quality_score ?? 0),
-    quality_tier: ((paper.quality_tier ?? "emerging").toLowerCase() as "top" | "core" | "emerging"),
-    pubmed_url: paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/",
-    is_open_access: Boolean(paper.is_open_access),
-    oa_pdf_url: paper.oa_pdf_url,
-    abstract_zh: paper.abstract_zh,
-    ai_analysis: paper.ai_analysis
-      ? {
-          summary_zh:
-            typeof paper.ai_analysis.summary_zh === "string" ? paper.ai_analysis.summary_zh : "",
-          background:
-            typeof paper.ai_analysis.background === "string" ? paper.ai_analysis.background : "",
-          method: typeof paper.ai_analysis.method === "string" ? paper.ai_analysis.method : "",
-          value: typeof paper.ai_analysis.value === "string" ? paper.ai_analysis.value : "",
-        }
-      : null,
-    source_type: sourceType,
-    recommendation_reason: reason,
-    pdf_emailed_at: emailedAt,
-  };
-}
-
-function parseRpcPapers(feedData: unknown) {
-  const asObject = feedData && typeof feedData === "object" ? (feedData as Record<string, unknown>) : null;
-  const objectPapers = Array.isArray(asObject?.papers) ? (asObject.papers as DbPaper[]) : null;
-  const rowsFromArray = Array.isArray(feedData) ? (feedData as DbPaper[]) : [];
-  return objectPapers ?? rowsFromArray;
+  return keywords.some((keyword) => text.includes(keyword));
 }
 
 export async function buildSpotlightPapers(params: {
@@ -132,56 +50,31 @@ export async function buildSpotlightPapers(params: {
   const keywords: string[] = [];
 
   if (userId) {
-    const { data: profile } = await service
-      .from("profiles")
-      .select("is_active,subscription_keywords,custom_journals")
-      .eq("id", userId)
-      .maybeSingle();
-    const p = profile as ProfileRow | null;
-    const subscriptionEnabled = p?.is_active !== false;
-    if (subscriptionEnabled) {
-      for (const kw of normalizeList(p?.subscription_keywords)) keywords.push(kw);
-      for (const j of normalizeList(p?.custom_journals)) journalTerms.add(j);
-      hasProfileConfig = Boolean(journalTerms.size || keywords.length);
+    const subscriptionStatus = await getProfileSubscriptionStatus(service, userId);
+    if (subscriptionStatus.subscriptionEnabled) {
+      for (const keyword of normalizeList(subscriptionStatus.keywords)) keywords.push(keyword);
+      for (const journal of normalizeList(subscriptionStatus.customJournals)) {
+        journalTerms.add(journal);
+      }
+      hasProfileConfig = subscriptionStatus.hasSubscriptionConfig;
     }
   }
 
-  const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
   let papers: DbPaper[] = [];
 
-  if (userId) {
-    const { data: feedData, error: rpcErr } = await service.rpc("get_personalized_feed", {
-      p_user_id: userId,
-      p_page: 1,
-      p_page_size: 120,
-    });
-    if (rpcErr) {
-      throw new Error(`Failed to load personalized spotlight feed: ${rpcErr.message}`);
-    }
-    papers = parseRpcPapers(feedData);
-  } else {
-    const { data: rows, error } = await service
-      .from("papers")
-      .select(
-        "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis",
-      )
-      .eq("is_ai_med", true)
-      .in("quality_tier", ["top", "core"])
-      .gte("publication_date", cutoffDate)
-      .order("quality_score", { ascending: false })
-      .order("publication_date", { ascending: false })
-      .limit(240);
-    if (error) {
-      throw new Error(`Failed to load papers: ${error.message}`);
-    }
-    papers = (rows ?? []) as DbPaper[];
-  }
+  papers = await listRecentQualityPapers(service, {
+    cutoffDate,
+    limit: 240,
+  });
 
   papers = papers.filter((paper) => {
-    const d = paper.publication_date;
-    if (!d) return false;
+    const date = paper.publication_date;
+    if (!date) return false;
     const tier = (paper.quality_tier ?? "").toLowerCase();
-    return d >= cutoffDate && (tier === "top" || tier === "core");
+    return date >= cutoffDate && (tier === "top" || tier === "core");
   });
 
   const scored = papers.map((paper) => {
@@ -199,10 +92,10 @@ export async function buildSpotlightPapers(params: {
   });
 
   const used = new Set<string>();
-  const choose = (candidates: typeof scored, n: number) => {
+  const choose = (candidates: typeof scored, count: number) => {
     const picked: typeof scored = [];
     for (const item of candidates) {
-      if (picked.length >= n) break;
+      if (picked.length >= count) break;
       if (used.has(item.paper.id)) continue;
       used.add(item.paper.id);
       picked.push(item);
@@ -262,23 +155,18 @@ export async function buildSpotlightPapers(params: {
     }
   }
 
-  const interactions = new Map<string, string | null>();
-  if (userId && spotlight.length) {
-    const { data: interactionRows } = await service
-      .from("user_paper_interactions")
-      .select("paper_id,pdf_emailed_at")
-      .eq("user_id", userId)
-      .in(
-        "paper_id",
-        spotlight.map((item) => item.paper.id),
-      );
-    for (const row of interactionRows ?? []) {
-      interactions.set(row.paper_id, row.pdf_emailed_at);
-    }
-  }
+  const interactions = await getPaperEmailInteractions(
+    service,
+    userId,
+    spotlight.map((item) => item.paper.id),
+  );
 
   const items = spotlight.map((item) =>
-    toPaperOutput(item.paper, item.source_type, item.reason, interactions.get(item.paper.id) ?? null),
+    mapPaperToPaperCard(item.paper, {
+      sourceType: item.source_type,
+      recommendationReason: item.reason,
+      emailedAt: interactions.get(item.paper.id)?.pdf_emailed_at ?? null,
+    }),
   );
 
   return { items, hasProfileConfig };

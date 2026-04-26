@@ -5,10 +5,10 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Clock, Sparkles } from "lucide-react";
-import { createClient } from "@supabase/supabase-js";
 
 import { buildRedirectTarget, buildSignInPath } from "@/lib/auth-navigation";
 import { DEV_PANEL_EMAIL, isDevPanelEmail } from "@/lib/dev-admin";
+import { getBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 type FeedPaper = {
   id: string;
@@ -194,12 +194,7 @@ export function DailyPaperModule() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const supabase = React.useMemo(() => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !anon) return null;
-    return createClient(url, anon);
-  }, []);
+  const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
 
   const [paper, setPaper] = React.useState<DailyPaperView>(fallbackPaper);
   const [items, setItems] = React.useState<DailyPaperView[]>([]);

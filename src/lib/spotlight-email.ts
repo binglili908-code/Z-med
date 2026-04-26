@@ -1,5 +1,4 @@
-import { Resend } from "resend";
-
+import { sendResendEmail } from "@/lib/resend-email";
 import type { SpotlightPaper } from "@/lib/spotlight";
 
 type SpotlightDigestTemplateOptions = {
@@ -32,13 +31,16 @@ function sourceTypeLabel(sourceType: SpotlightPaper["source_type"]) {
     case "trending":
       return "全局热点";
     case "serendipity":
-      return "拓边推荐";
+      return "拓展推荐";
     default:
       return "精选推荐";
   }
 }
 
-export function buildSpotlightDigestHtml(items: SpotlightPaper[], options: SpotlightDigestTemplateOptions) {
+export function buildSpotlightDigestHtml(
+  items: SpotlightPaper[],
+  options: SpotlightDigestTemplateOptions,
+) {
   const logoUrl = `${getBaseUrl()}/api/brand/logo`;
   const rows = items
     .map(
@@ -66,7 +68,7 @@ export function buildSpotlightDigestHtml(items: SpotlightPaper[], options: Spotl
       <h2 style="margin:0 0 8px 0;color:#0f172a;">${options.heading}</h2>
       <p style="color:#475569;margin:4px 0 16px 0;font-size:13px;">${options.intro}</p>
       ${rows}
-      <div style="margin-top:16px;font-size:11px;color:#64748b;">${options.footer ?? "如需调整订阅偏好，请前往 Z‑Lab 设置页面。"}</div>
+      <div style="margin-top:16px;font-size:11px;color:#64748b;">${options.footer ?? "如需调整订阅偏好，请前往 Z-Lab 设置页面。"}</div>
     </div>
   `;
 }
@@ -80,32 +82,15 @@ export function getWeeklySpotlightEmailSubject(issueWeekStart: string) {
 }
 
 export async function sendSpotlightDigestEmail(params: SendSpotlightDigestEmailParams) {
-  const resendApiKey = process.env.RESEND_API_KEY?.trim();
-  if (!resendApiKey) {
-    throw new Error("Missing required env: RESEND_API_KEY");
-  }
-  const from = process.env.RESEND_FROM_EMAIL?.trim();
-  if (!from) {
-    throw new Error("Missing required env: RESEND_FROM_EMAIL");
-  }
-
-  const resend = new Resend(resendApiKey);
   const html = buildSpotlightDigestHtml(params.items, {
     heading: params.heading,
     intro: params.intro,
     footer: params.footer,
   });
 
-  const response = await resend.emails.send({
-    from,
+  return sendResendEmail({
     to: params.to,
     subject: params.subject,
     html,
   });
-
-  if (response.error) {
-    throw new Error(`Email sending failed: ${response.error.message}`);
-  }
-
-  return response.data ?? null;
 }

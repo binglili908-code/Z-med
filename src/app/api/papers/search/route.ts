@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { searchPapers } from "@/server/repositories/papers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,27 +9,6 @@ export const dynamic = "force-dynamic";
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
-
-type SearchPaperRow = {
-  id: string;
-  title: string | null;
-  title_zh?: string | null;
-  abstract: string | null;
-  abstract_zh: string | null;
-  journal: string | null;
-  journal_if: number | null;
-  journal_cas_zone: string | null;
-  publication_date: string | null;
-  pubmed_url: string | null;
-  is_open_access: boolean | null;
-  oa_pdf_url: string | null;
-  is_ai_med: boolean | null;
-  ai_med_score: number | null;
-  quality_score: number | null;
-  quality_tier: string | null;
-  keywords: string[] | null;
-  mesh_terms: string[] | null;
-};
 
 function normalizeSearchTerms(q: string) {
   const list = q
@@ -53,22 +33,6 @@ function normalizeIfRange(min: number | null, max: number | null) {
   return { min, max };
 }
 
-function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
-  if (!terms.length) return true;
-  const haystack = [
-    paper.title ?? "",
-    paper.title_zh ?? "",
-    paper.abstract ?? "",
-    paper.abstract_zh ?? "",
-    paper.journal ?? "",
-    ...(paper.keywords ?? []),
-    ...(paper.mesh_terms ?? []),
-  ]
-    .join("\n")
-    .toLowerCase();
-  return terms.some((term) => haystack.includes(term));
-}
-
 export async function GET(req: Request) {
   const supabase = createServiceSupabaseClient();
   const { searchParams } = new URL(req.url);
@@ -86,53 +50,31 @@ export async function GET(req: Request) {
   const fromIndex = (page - 1) * pageSize;
   const toIndex = fromIndex + pageSize - 1;
 
-  let query = supabase
-    .from("papers")
-    .select(
-      "id,title,title_zh,abstract,abstract_zh,journal,journal_if,journal_cas_zone,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms",
-    )
-    .eq("is_ai_med", true);
-
   const terms = normalizeSearchTerms(q);
-  if (tier) {
-    query = query.eq("quality_tier", tier);
+  let result;
+  try {
+    result = await searchPapers(supabase, {
+      terms,
+      tier,
+      from,
+      to,
+      openAccessOnly: oa === "true",
+      ifMin: ifRange.min,
+      ifMax: ifRange.max,
+      fromIndex,
+      toIndex,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
   }
-  if (from) {
-    query = query.gte("publication_date", from);
-  }
-  if (to) {
-    query = query.lte("publication_date", to);
-  }
-  if (oa === "true") {
-    query = query.eq("is_open_access", true);
-  }
-  if (ifRange.min != null) {
-    query = query.gte("journal_if", ifRange.min);
-  }
-  if (ifRange.max != null) {
-    query = query.lte("journal_if", ifRange.max);
-  }
-
-  const { data, error } = await query
-    .order("quality_score", { ascending: false })
-    .order("ai_med_score", { ascending: false })
-    .order("publication_date", { ascending: false });
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  let rows = (data ?? []) as SearchPaperRow[];
-  if (terms.length) {
-    rows = rows.filter((paper) => paperMatchesTerms(paper, terms));
-  }
-  const total = rows.length;
-  const items = rows.slice(fromIndex, toIndex + 1);
 
   return NextResponse.json({
     page,
     pageSize,
-    total,
-    items,
+    total: result.total,
+    items: result.items,
   });
 }

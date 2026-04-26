@@ -1,24 +1,15 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { callMiniMaxChat, getMiniMaxApiKey } from "@/lib/minimax";
-
-type PaperRow = {
-  id: string;
-  title: string;
-  title_zh?: string | null;
-  journal: string | null;
-  abstract: string | null;
-  abstract_zh?: string | null;
-  quality_score: number | null;
-};
-
-type QueueRow = {
-  id: string;
-  paper_id: string;
-  attempts: number | null;
-  max_attempts: number | null;
-  priority: number | null;
-  status: string;
-};
+import {
+  enqueueMissingPlatformAnalysisJobs,
+  getAiAnalysisPapersByIds,
+  listRunnablePlatformAnalysisJobs,
+  markAiAnalysisJobCompleted,
+  markAiAnalysisJobFailed,
+  markAiAnalysisJobProcessing,
+  updatePaperTranslations,
+  type AiAnalysisPaperRow,
+} from "@/server/repositories/ai-analysis";
 
 const MODEL_NAME = "MiniMax-Text-01";
 const MAX_BATCH_SIZE = 20;
@@ -29,13 +20,7 @@ const SYSTEM_PROMPT = `你是一位专业的医学翻译。请将以下英文医
 3. 不要添加任何解读、评论或总结，只做翻译
 4. 直接输出翻译后的中文文本，不要加引号或标记`;
 
-function toQueuePriority(qualityScore: unknown) {
-  const v = Number(qualityScore ?? 0);
-  if (!Number.isFinite(v)) return 0;
-  return Math.max(0, Math.round(v * 10000));
-}
-
-async function callMiniMaxAnalysis(paper: PaperRow) {
+async function callMiniMaxAnalysis(paper: AiAnalysisPaperRow) {
   const userPrompt = `论文标题：${paper.title}
 期刊：${paper.journal ?? "Unknown"}
 摘要原文：${paper.abstract ?? "无摘要"}`;
@@ -72,82 +57,14 @@ async function callMiniMaxTitle(title: string, journal: string | null) {
   return content.trim();
 }
 
-async function ensurePlatformQueue(supabase: ReturnType<typeof createServiceSupabaseClient>) {
-  const { data: candidates, error: candidateErr } = await supabase
-    .from("papers")
-    .select("id,quality_score,abstract,title_zh,abstract_zh")
-    .eq("is_ai_med", true)
-    .not("abstract", "is", null)
-    .order("quality_score", { ascending: false })
-    .limit(400);
-  if (candidateErr) {
-    throw new Error(`Load papers for AI queue failed: ${candidateErr.message}`);
-  }
-
-  const todoCandidates = (candidates ?? []).filter(
-    (r) => r.abstract_zh == null || r.title_zh == null,
-  );
-
-  const paperIds = todoCandidates.map((r) => r.id);
-  if (!paperIds.length) {
-    return { enqueuedCount: 0 };
-  }
-
-  const { data: existingRows, error: existingErr } = await supabase
-    .from("ai_analysis_queue")
-    .select("paper_id")
-    .eq("provider", "platform")
-    .is("user_id", null)
-    .in("paper_id", paperIds);
-  if (existingErr) {
-    throw new Error(`Load existing AI queue failed: ${existingErr.message}`);
-  }
-
-  const existing = new Set((existingRows ?? []).map((r) => r.paper_id));
-  const insertRows = todoCandidates
-    .filter((r) => !existing.has(r.id))
-    .map((r) => ({
-      paper_id: r.id,
-      user_id: null,
-      provider: "platform",
-      status: "pending",
-      priority: toQueuePriority(r.quality_score),
-      attempts: 0,
-      max_attempts: 3,
-    }));
-
-  if (!insertRows.length) {
-    return { enqueuedCount: 0 };
-  }
-
-  const { error: insertErr } = await supabase.from("ai_analysis_queue").insert(insertRows);
-  if (insertErr) {
-    throw new Error(`Insert AI queue failed: ${insertErr.message}`);
-  }
-  return { enqueuedCount: insertRows.length };
-}
-
 export async function runAiAnalysisCronJob() {
   const supabase = createServiceSupabaseClient();
   const hasMiniMaxApiKey = Boolean(getMiniMaxApiKey());
-  const { enqueuedCount } = await ensurePlatformQueue(supabase);
-
-  const { data: queueRows, error: queueErr } = await supabase
-    .from("ai_analysis_queue")
-    .select("id,paper_id,attempts,max_attempts,priority,status")
-    .eq("provider", "platform")
-    .is("user_id", null)
-    .in("status", ["pending", "failed"])
-    .order("priority", { ascending: false })
-    .order("created_at", { ascending: true })
-    .limit(100);
-  if (queueErr) {
-    throw new Error(`Load AI queue jobs failed: ${queueErr.message}`);
-  }
-
-  const jobs = ((queueRows ?? []) as QueueRow[])
-    .filter((j) => (j.attempts ?? 0) < (j.max_attempts ?? 3))
-    .slice(0, MAX_BATCH_SIZE);
+  const { enqueuedCount } = await enqueueMissingPlatformAnalysisJobs(supabase);
+  const jobs = await listRunnablePlatformAnalysisJobs(supabase, {
+    scanLimit: 100,
+    batchSize: MAX_BATCH_SIZE,
+  });
 
   if (!jobs.length) {
     return {
@@ -161,89 +78,53 @@ export async function runAiAnalysisCronJob() {
     };
   }
 
-  const paperIds = jobs.map((j) => j.paper_id);
-  const { data: papers, error: paperErr } = await supabase
-    .from("papers")
-    .select("id,title,journal,abstract,quality_score,abstract_zh,title_zh")
-    .in("id", paperIds);
-  if (paperErr) {
-    throw new Error(`Load papers for AI jobs failed: ${paperErr.message}`);
-  }
-
-  const paperMap = new Map((papers ?? []).map((p) => [p.id, p as PaperRow]));
+  const paperMap = await getAiAnalysisPapersByIds(
+    supabase,
+    jobs.map((job) => job.paper_id),
+  );
   let completed = 0;
   let failed = 0;
   const failures: Array<{ queueId: string; paperId: string; error: string }> = [];
 
   for (const job of jobs) {
     const attemptsNow = (job.attempts ?? 0) + 1;
-    await supabase
-      .from("ai_analysis_queue")
-      .update({ status: "processing" })
-      .eq("id", job.id);
+    await markAiAnalysisJobProcessing(supabase, job.id);
 
     const paper = paperMap.get(job.paper_id);
     if (!paper) {
-      await supabase
-        .from("ai_analysis_queue")
-        .update({ status: "failed", attempts: attemptsNow })
-        .eq("id", job.id);
+      await markAiAnalysisJobFailed(supabase, job.id, attemptsNow, "paper not found");
       failed += 1;
       failures.push({ queueId: job.id, paperId: job.paper_id, error: "paper not found" });
       continue;
     }
 
     try {
-      const updatePayload: Record<string, unknown> = {
-        updated_at: new Date().toISOString(),
-      };
+      let abstractZh: string | null = null;
+      let titleZh: string | null = null;
 
       if (!paper.abstract_zh) {
         const translated = await callMiniMaxAnalysis(paper);
-        updatePayload.abstract_zh = translated;
+        abstractZh = translated;
       }
 
       if (!paper.title_zh) {
-        let titleZh: string | null = null;
         try {
           titleZh = await callMiniMaxTitle(paper.title, paper.journal);
         } catch {
           titleZh = null;
         }
-        if (titleZh) {
-          updatePayload.title_zh = titleZh;
-        }
-      }
-      let { error: updatePaperErr } = await supabase
-        .from("papers")
-        .update(updatePayload)
-        .eq("id", paper.id);
-      if (updatePaperErr && updatePayload.title_zh) {
-        const retryPayload: Record<string, unknown> = {
-          ...(updatePayload.abstract_zh ? { abstract_zh: updatePayload.abstract_zh } : {}),
-          updated_at: new Date().toISOString(),
-        };
-        const retry = await supabase.from("papers").update(retryPayload).eq("id", paper.id);
-        updatePaperErr = retry.error;
-      }
-      if (updatePaperErr) {
-        throw new Error(updatePaperErr.message);
       }
 
-      const { error: queueDoneErr } = await supabase
-        .from("ai_analysis_queue")
-        .update({ status: "completed", attempts: attemptsNow })
-        .eq("id", job.id);
-      if (queueDoneErr) {
-        throw new Error(queueDoneErr.message);
-      }
+      await updatePaperTranslations(supabase, {
+        paperId: paper.id,
+        abstractZh,
+        titleZh,
+      });
+      await markAiAnalysisJobCompleted(supabase, job.id, attemptsNow);
       completed += 1;
     } catch (e) {
       const errText = e instanceof Error ? e.message : String(e);
-      await supabase
-        .from("ai_analysis_queue")
-        .update({ status: "failed", attempts: attemptsNow })
-        .eq("id", job.id);
+      await markAiAnalysisJobFailed(supabase, job.id, attemptsNow, errText);
       failed += 1;
       failures.push({ queueId: job.id, paperId: job.paper_id, error: errText.slice(0, 280) });
     }

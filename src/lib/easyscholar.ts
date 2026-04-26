@@ -1,10 +1,12 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
-
-type JournalRow = {
-  id: string;
-  journal_name: string;
-  aliases: string[] | null;
-};
+import {
+  listActiveEasyScholarJournals,
+  readEasyScholarCursor,
+  updateJournalEasyScholarResult,
+  writeEasyScholarCursor,
+  type EasyScholarJournalRow,
+  type EasyScholarJournalUpdate,
+} from "@/server/repositories/easyscholar";
 
 type EasyScholarResponse = {
   code?: number;
@@ -34,7 +36,6 @@ type QueryResult = {
 };
 
 const EASY_SCHOLAR_ENDPOINT = "https://www.easyscholar.cc/open/getPublicationRank";
-const CURSOR_KEY = "easyscholar_sync_cursor";
 const RATE_LIMIT_MS = 550;
 const REQUEST_TIMEOUT_MS = 12000;
 const BATCH_SIZE_DEFAULT = 30;
@@ -224,41 +225,12 @@ async function queryEasyScholarByName(args: {
   };
 }
 
-async function readCursor(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  total: number,
-) {
-  if (total <= 0) return 0;
-  const { data } = await supabase
-    .from("sync_state")
-    .select("value")
-    .eq("key", CURSOR_KEY)
-    .maybeSingle();
-  const n = Number((data as { value?: string } | null)?.value ?? 0);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n % total;
-}
-
-async function writeCursor(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  nextCursor: number,
-) {
-  await supabase.from("sync_state").upsert(
-    {
-      key: CURSOR_KEY,
-      value: String(nextCursor),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "key" },
-  );
-}
-
-function getBatchByCursor(rows: JournalRow[], cursor: number, batchSize: number) {
+function getBatchByCursor(rows: EasyScholarJournalRow[], cursor: number, batchSize: number) {
   if (!rows.length || batchSize <= 0) {
-    return { batch: [] as JournalRow[], nextCursor: 0 };
+    return { batch: [] as EasyScholarJournalRow[], nextCursor: 0 };
   }
   const size = Math.min(batchSize, rows.length);
-  const out: JournalRow[] = [];
+  const out: EasyScholarJournalRow[] = [];
   for (let i = 0; i < size; i += 1) {
     out.push(rows[(cursor + i) % rows.length]);
   }
@@ -274,17 +246,7 @@ export async function runEasyScholarSyncJob(options?: { batchSize?: number }) {
 
   const supabase = createServiceSupabaseClient();
   const batchSize = Math.max(1, Math.min(100, Number(options?.batchSize ?? BATCH_SIZE_DEFAULT)));
-  const { data: journals, error: journalErr } = await supabase
-    .from("journal_quality")
-    .select("id,journal_name,aliases")
-    .eq("is_active", true)
-    .order("journal_name", { ascending: true });
-
-  if (journalErr) {
-    throw new Error(`Load journal_quality failed: ${journalErr.message}`);
-  }
-
-  const rows = (journals ?? []) as JournalRow[];
+  const rows = await listActiveEasyScholarJournals(supabase);
   if (!rows.length) {
     return {
       syncedCount: 0,
@@ -297,7 +259,7 @@ export async function runEasyScholarSyncJob(options?: { batchSize?: number }) {
     };
   }
 
-  const cursor = await readCursor(supabase, rows.length);
+  const cursor = await readEasyScholarCursor(supabase, rows.length);
   const { batch, nextCursor } = getBatchByCursor(rows, cursor, batchSize);
   const limiter = new EasyScholarLimiter();
 
@@ -339,7 +301,7 @@ export async function runEasyScholarSyncJob(options?: { batchSize?: number }) {
     else if (finalResult.status === "not_found") notFoundCount += 1;
     else failedCount += 1;
 
-    const updatePayload: Record<string, unknown> = {
+    const updatePayload: EasyScholarJournalUpdate = {
       es_last_sync_at: new Date().toISOString(),
       es_sync_status: finalResult.status,
       es_error: finalResult.status === "failed" ? finalResult.message : null,
@@ -350,16 +312,13 @@ export async function runEasyScholarSyncJob(options?: { batchSize?: number }) {
       updated_at: new Date().toISOString(),
     };
 
-    const { error: updateErr } = await supabase
-      .from("journal_quality")
-      .update(updatePayload)
-      .eq("id", row.id);
-    if (updateErr) {
+    const updateResult = await updateJournalEasyScholarResult(supabase, row.id, updatePayload);
+    if (!updateResult.ok) {
       failedCount += 1;
     }
   }
 
-  await writeCursor(supabase, nextCursor);
+  await writeEasyScholarCursor(supabase, nextCursor);
 
   return {
     syncedCount: batch.length,

@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { fetchWithTimeout } from "@/lib/external-fetch";
+
 export interface MiniMaxChatRequest {
   systemPrompt?: string;
   userPrompt: string;
@@ -73,7 +75,7 @@ export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxC
   }
   messages.push({ role: "user", content: req.userPrompt });
 
-  const response = await fetch("https://api.minimax.chat/v1/text/chatcompletion_v2", {
+  const response = await fetchWithTimeout("https://api.minimax.chat/v1/text/chatcompletion_v2", {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -83,6 +85,8 @@ export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxC
       max_tokens: req.maxTokens ?? 1600,
     }),
     cache: "no-store",
+    label: "MiniMax chat",
+    timeoutMs: 45000,
   });
 
   const payload = (await response.json().catch(() => null)) as

@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 
 import { createUserSupabaseClient } from "@/lib/supabase/user";
+import {
+  getUserSubscription,
+  saveUserSubscription,
+} from "@/server/repositories/profiles";
+import type {
+  UserSubscription,
+  UserSubscriptionSaveResponse,
+} from "@/shared/contracts/subscriptions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-type UserSubscription = {
-  subscription_enabled: boolean;
-  custom_journals: string[];
-  keywords: string[];
-};
 
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
@@ -17,15 +19,8 @@ function getBearerToken(req: Request) {
   return matched?.[1];
 }
 
-function normalizeStringList(input: unknown) {
-  if (!Array.isArray(input)) return [];
-  const set = new Set<string>();
-  for (const raw of input) {
-    if (typeof raw !== "string") continue;
-    const v = raw.trim();
-    if (v) set.add(v);
-  }
-  return Array.from(set);
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unexpected subscription error";
 }
 
 export async function GET(req: Request) {
@@ -43,22 +38,12 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: profile, error: profileErr } = await userClient
-    .from("profiles")
-    .select("subscription_keywords, custom_journals, is_active")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (profileErr) {
-    return NextResponse.json({ error: profileErr.message }, { status: 500 });
+  try {
+    const payload = await getUserSubscription(userClient, user.id);
+    return NextResponse.json(payload satisfies UserSubscription);
+  } catch (error) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
-
-  const payload: UserSubscription = {
-    subscription_enabled: profile?.is_active !== false,
-    custom_journals: normalizeStringList(profile?.custom_journals),
-    keywords: normalizeStringList(profile?.subscription_keywords),
-  };
-
-  return NextResponse.json(payload);
 }
 
 export async function PUT(req: Request) {
@@ -83,30 +68,10 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const customJournals = normalizeStringList(body.custom_journals);
-  const keywords = normalizeStringList(body.keywords);
-  const subscriptionEnabled = body.subscription_enabled !== false;
-
-  const { error: profileErr } = await userClient
-    .from("profiles")
-    .upsert(
-      {
-        id: user.id,
-        is_active: subscriptionEnabled,
-        subscription_keywords: keywords,
-        custom_journals: customJournals,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "id" },
-    );
-  if (profileErr) {
-    return NextResponse.json({ error: profileErr.message }, { status: 500 });
+  try {
+    const payload = await saveUserSubscription(userClient, user.id, body);
+    return NextResponse.json(payload satisfies UserSubscriptionSaveResponse);
+  } catch (error) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
-
-  return NextResponse.json({
-    ok: true,
-    subscription_enabled: subscriptionEnabled,
-    custom_journals: customJournals,
-    keywords,
-  });
 }

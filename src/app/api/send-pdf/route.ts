@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { Resend } from "resend";
 
+import { sendResendEmail } from "@/lib/resend-email";
 import {
   getDevBypassSeedEmail,
   getDevBypassUserId,
@@ -8,6 +8,14 @@ import {
 } from "@/lib/supabase/env";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
+import {
+  getPaperForPdfEmail,
+  recordPdfEmailInteraction,
+} from "@/server/repositories/pdf-email";
+import {
+  findProfileIdByContactEmail,
+  getProfileContactEmail,
+} from "@/server/repositories/profiles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,13 +35,11 @@ async function resolveBypassUserId(serviceClient: ReturnType<typeof createServic
   if (direct) return direct;
   const seedEmail = getDevBypassSeedEmail();
   if (!seedEmail) return null;
-  const { data } = await serviceClient
-    .from("profiles")
-    .select("id")
-    .eq("contact_email", seedEmail)
-    .limit(1)
-    .maybeSingle();
-  return data?.id ?? null;
+  return findProfileIdByContactEmail(serviceClient, seedEmail);
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function POST(req: Request) {
@@ -75,15 +81,12 @@ export async function POST(req: Request) {
     );
   }
 
-  const { data: profile, error: profileErr } = await serviceClient
-    .from("profiles")
-    .select("contact_email")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (profileErr) {
+  let contactEmail: string | null;
+  try {
+    contactEmail = await getProfileContactEmail(serviceClient, user.id);
+  } catch (error) {
     return NextResponse.json(
-      { error: `Profile query failed: ${profileErr.message}` },
+      { error: getErrorMessage(error) },
       { status: 500 },
     );
   }
@@ -95,7 +98,7 @@ export async function POST(req: Request) {
     seedEmail;
   const emailTo = (devBypass && devRecipient
     ? devRecipient
-    : profile?.contact_email || user.email || "").trim();
+    : contactEmail || user.email || "").trim();
   if (!emailTo) {
     return NextResponse.json(
       { error: "No contact email found for this user" },
@@ -103,13 +106,8 @@ export async function POST(req: Request) {
     );
   }
 
-  const { data: paper, error: paperErr } = await serviceClient
-    .from("papers")
-    .select("id,title,pubmed_url,is_open_access,oa_pdf_url")
-    .eq("id", paperId)
-    .single();
-
-  if (paperErr || !paper) {
+  const paper = await getPaperForPdfEmail(serviceClient, paperId);
+  if (!paper) {
     return NextResponse.json({ error: "Paper not found" }, { status: 404 });
   }
 
@@ -119,22 +117,6 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-
-  const resendApiKey = process.env.RESEND_API_KEY?.trim();
-  if (!resendApiKey) {
-    return NextResponse.json(
-      { error: "Missing required env: RESEND_API_KEY" },
-      { status: 500 },
-    );
-  }
-  const from = process.env.RESEND_FROM_EMAIL?.trim();
-  if (!from) {
-    return NextResponse.json(
-      { error: "Missing required env: RESEND_FROM_EMAIL" },
-      { status: 500 },
-    );
-  }
-  const resend = new Resend(resendApiKey);
 
   const subject = `文献全文链接：${paper.title}`;
   const html = `
@@ -147,15 +129,12 @@ export async function POST(req: Request) {
     </div>
   `;
 
-  let mailErr: { message: string } | null = null;
   try {
-    const resp = await resend.emails.send({
-      from,
+    await sendResendEmail({
       to: emailTo,
       subject,
       html,
     });
-    mailErr = resp.error ?? null;
   } catch (error) {
     return NextResponse.json(
       {
@@ -168,30 +147,14 @@ export async function POST(req: Request) {
     );
   }
 
-  if (mailErr) {
+  try {
+    await recordPdfEmailInteraction(serviceClient, {
+      userId: user.id,
+      paperId: paper.id,
+    });
+  } catch (error) {
     return NextResponse.json(
-      { error: `Email sending failed: ${mailErr.message}` },
-      { status: 500 },
-    );
-  }
-
-  const { error: upsertErr } = await serviceClient
-    .from("user_paper_interactions")
-    .upsert(
-      {
-        user_id: user.id,
-        paper_id: paper.id,
-        pdf_emailed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "user_id,paper_id",
-      },
-    );
-
-  if (upsertErr) {
-    return NextResponse.json(
-      { error: `Failed to record interaction: ${upsertErr.message}` },
+      { error: getErrorMessage(error) },
       { status: 500 },
     );
   }

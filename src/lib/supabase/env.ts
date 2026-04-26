@@ -6,12 +6,23 @@ function required(name: string) {
   return value;
 }
 
+function requiredAny(names: string[]) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value) return value;
+  }
+  throw new Error(`Missing required env: ${names.join(" or ")}`);
+}
+
 export function getSupabaseUrl() {
   return required("NEXT_PUBLIC_SUPABASE_URL");
 }
 
 export function getSupabaseAnonKey() {
-  return required("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  return requiredAny([
+    "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+  ]);
 }
 
 export function getSupabaseServiceRoleKey() {

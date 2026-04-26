@@ -12,6 +12,10 @@ import {
 import { buildSpotlightPapers } from "@/lib/spotlight";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
+import {
+  findProfileIdByContactEmail,
+  getProfileContactEmail,
+} from "@/server/repositories/profiles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,18 +26,16 @@ function getBearerToken(req: Request) {
   return matched?.[1];
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function resolveBypassUserId(service: ReturnType<typeof createServiceSupabaseClient>) {
   const direct = getDevBypassUserId();
   if (direct) return direct;
   const seedEmail = getDevBypassSeedEmail();
   if (!seedEmail) return null;
-  const { data } = await service
-    .from("profiles")
-    .select("id")
-    .eq("contact_email", seedEmail)
-    .limit(1)
-    .maybeSingle();
-  return data?.id ?? null;
+  return findProfileIdByContactEmail(service, seedEmail);
 }
 
 export async function POST(req: Request) {
@@ -66,13 +68,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const { data: profile, error: profileErr } = await service
-    .from("profiles")
-    .select("contact_email")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (profileErr) {
-    return NextResponse.json({ error: `Profile query failed: ${profileErr.message}` }, { status: 500 });
+  let contactEmail: string | null;
+  try {
+    contactEmail = await getProfileContactEmail(service, user.id);
+  } catch (error) {
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
 
   const seedEmail = getDevBypassSeedEmail();
@@ -82,21 +82,21 @@ export async function POST(req: Request) {
     seedEmail;
   const emailTo = (devBypass && devRecipient
     ? devRecipient
-    : profile?.contact_email || user.email || "").trim();
+    : contactEmail || user.email || "").trim();
   if (!emailTo) {
     return NextResponse.json({ error: "No contact email found for this user" }, { status: 400 });
   }
 
-  let items: Awaited<ReturnType<typeof buildSpotlightPapers>>["items"] = [];
+  let spotlightResult: Awaited<ReturnType<typeof buildSpotlightPapers>>;
   try {
-    const result = await buildSpotlightPapers({ userId: user.id, service });
-    items = result.items;
+    spotlightResult = await buildSpotlightPapers({ userId: user.id, service });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? `Build spotlight failed: ${error.message}` : "Build spotlight failed" },
+      { error: `Build spotlight failed: ${getErrorMessage(error)}` },
       { status: 500 },
     );
   }
+  const items = spotlightResult.items;
   if (!items.length) {
     return NextResponse.json({ error: "No spotlight papers available" }, { status: 400 });
   }
@@ -107,11 +107,11 @@ export async function POST(req: Request) {
       subject: getDailySpotlightEmailSubject(),
       items,
       heading: "今日首页精选 7 篇文献",
-      intro: "这是 Z‑Lab AI 为您精选的本期 7 篇文献（5 篇相关 + 1 篇热点 + 1 篇拓边）。",
+      intro: "这是 Z-Lab AI 为您精选的本期 7 篇文献（5 篇相关 + 1 篇热点 + 1 篇拓展），内容与首页保持同源。",
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? `Email sending failed: ${error.message}` : "Email sending failed" },
+      { error: `Email sending failed: ${getErrorMessage(error)}` },
       { status: 500 },
     );
   }
@@ -120,5 +120,7 @@ export async function POST(req: Request) {
     ok: true,
     emailedTo: emailTo,
     count: items.length,
+    personalized: spotlightResult.hasProfileConfig,
+    userId: user.id,
   });
 }

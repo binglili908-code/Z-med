@@ -1,205 +1,49 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { computeDynamicQualityScore } from "@/lib/journal-score";
-
-type ProfileKeywordRow = {
-  subscription_keywords: string[] | null;
-  subscription_mesh_terms: string[] | null;
-};
-
-type ESummaryAuthor = {
-  name?: string;
-};
-
-type ESummaryArticleId = {
-  idtype?: string;
-  value?: string;
-};
-
-type PubmedSummary = {
-  pmid: string;
-  doi?: string;
-  title: string;
-  abstract: string | null;
-  journal: string | null;
-  publication_date: string | null;
-  pubmed_url: string;
-  authors: string[];
-  mesh_terms: string[];
-  keywords: string[];
-  source_payload: Record<string, unknown>;
-};
-
-type OpenAccessInfo = {
-  is_open_access: boolean;
-  oa_pdf_url: string | null;
-};
-
-type JournalQualityRow = {
-  id?: string;
-  journal_name: string;
-  aliases: string[] | null;
-  tier: string;
-  weight: number | null;
-  impact_factor?: number | null;
-  jcr_quartile?: string | null;
-  cas_zone?: string | null;
-  is_active: boolean | null;
-};
-
-type JournalQualityMatcher = {
-  exactByName: Map<string, JournalQualityRow>;
-  byAlias: Map<string, JournalQualityRow>;
-};
-
-type TopicRule = {
-  slug: string;
-  keywords: string[];
-};
-
-const AI_TERMS = [
-  "ai",
-  "artificial intelligence",
-  "machine learning",
-  "deep learning",
-  "large language model",
-  "foundation model",
-  "neural network",
-  "transformer",
-  "computer vision",
-  "natural language processing",
-];
-
-const MED_TERMS = [
-  "medicine",
-  "clinical",
-  "radiology",
-  "pathology",
-  "oncology",
-  "cardiology",
-  "neurology",
-  "medical imaging",
-  "electronic health record",
-  "diagnosis",
-  "treatment",
-  "patient",
-  "hospital",
-  "fibrillation",
-  "atrial",
-  "cardiac",
-  "heart",
-];
-
-const TOPIC_KEYWORD_LIBRARY: Record<string, string[]> = {
-  imaging: [
-    "medical imaging",
-    "radiology",
-    "ct",
-    "mri",
-    "ultrasound",
-    "echocardiography",
-    "cardiac imaging",
-    "x-ray",
-    "dicom",
-    "segmentation",
-  ],
-  pathology: ["pathology", "digital pathology", "wsi", "whole slide", "histopathology"],
-  llm: ["large language model", "llm", "foundation model", "medical chatbot"],
-  nlp: [
-    "clinical nlp",
-    "electronic health record",
-    "ehr",
-    "clinical note",
-    "summarization",
-    "information extraction",
-  ],
-  bioinformatics: ["bioinformatics", "genomics", "proteomics", "single-cell", "transcriptomics"],
-  omics: ["metabolomics", "multi-omics", "multiomics", "rna-seq", "rna seq"],
-  drug: [
-    "drug discovery",
-    "virtual screening",
-    "target identification",
-    "molecular docking",
-    "drug design",
-    "alphafold",
-  ],
-  decision: [
-    "clinical decision support",
-    "risk prediction",
-    "prognosis",
-    "mortality",
-    "icu",
-    "complication",
-    "triage",
-    "early warning",
-  ],
-};
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function randomDelay(minMs: number, maxMs: number) {
-  const n = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
-  return sleep(n);
-}
-
-function asString(v: unknown): string | undefined {
-  return typeof v === "string" ? v : undefined;
-}
-
-function toDateString(pubdate?: string): string | null {
-  if (!pubdate) return null;
-  const m = pubdate.match(/^(\d{4})(?:\s+([A-Za-z]{3}))?(?:\s+(\d{1,2}))?/);
-  if (!m) return null;
-  const year = Number(m[1]);
-  const monthMap: Record<string, number> = {
-    Jan: 1,
-    Feb: 2,
-    Mar: 3,
-    Apr: 4,
-    May: 5,
-    Jun: 6,
-    Jul: 7,
-    Aug: 8,
-    Sep: 9,
-    Oct: 10,
-    Nov: 11,
-    Dec: 12,
-  };
-  const month = m[2] ? monthMap[m[2]] ?? 1 : 1;
-  const day = m[3] ? Number(m[3]) : 1;
-  const mm = String(month).padStart(2, "0");
-  const dd = String(day).padStart(2, "0");
-  return `${year}-${mm}-${dd}`;
-}
-
-function buildPubmedUrl(pmid: string) {
-  return `https://pubmed.ncbi.nlm.nih.gov/${encodeURIComponent(pmid)}/`;
-}
-
-function normalizeToken(input: string) {
-  return input.trim().toLowerCase();
-}
-
-function dedupeTerms(terms: string[]) {
-  return Array.from(new Set(terms.map((t) => normalizeToken(t)).filter(Boolean)));
-}
-
-function dedupeIdList(ids: string[]) {
-  const out: string[] = [];
-  const set = new Set<string>();
-  for (const id of ids) {
-    if (!set.has(id)) {
-      set.add(id);
-      out.push(id);
-    }
-  }
-  return out;
-}
-
-function normalizeJournalKey(input: string) {
-  return input.trim().toLowerCase();
-}
+import { scoreAndUpsertPapers } from "@/lib/pubmed-paper-scoring";
+import {
+  callMiniMaxKeywordExpansion,
+  extractPubmedQueryText,
+} from "@/lib/pubmed-keyword-expansion";
+import { KeywordSyncStats } from "@/lib/pubmed-keyword-sync-stats";
+import {
+  chunk,
+  dedupeIdList,
+  enrichSummariesWithAbstracts,
+  pubmedEsearch,
+  pubmedEsearchAll,
+  pubmedEsummary,
+  randomDelay,
+  resolveOpenAccessByDoi,
+  type PubmedSummary,
+} from "@/lib/pubmed-sync-client";
+import {
+  AI_TERMS,
+  MED_TERMS,
+  dedupeTerms,
+  normalizeToken,
+} from "@/lib/pubmed-sync-rules";
+import {
+  buildPubmedQueryForKeyword,
+  calculateAiMedScore,
+  getJournalTierAndWeight,
+  getOrFlagKeyword,
+  insertJournalSyncLog,
+  loadActiveJournalNames,
+  loadActiveJournals,
+  loadActiveProfileKeywordRows,
+  loadExistingPaperPmids,
+  loadJournalQualityMap,
+  loadProfileSubscriptionKeywordRows,
+  loadTopJournalTerms,
+  readBackfillMonthOffset,
+  saveLlmSynonyms,
+  upsertKeywordSyncedPaper,
+  writeBackfillMonthOffset,
+  writeSyncStateValue,
+  type JournalTierWeightResult,
+  type ProfileKeywordRow,
+} from "@/server/repositories/pubmed-sync";
 
 function toKeywordList(rows: ProfileKeywordRow[]) {
   const set = new Set<string>();
@@ -271,332 +115,6 @@ function buildJournalWindowQuery(journalName: string, fromDate: string, toDate: 
   return `"${j}"[Journal] AND (${fromDate}:${toDate}[dp])`;
 }
 
-function findTermMatches(text: string, terms: string[]) {
-  const lower = text.toLowerCase();
-  const matched = new Set<string>();
-  const escaped = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  for (const term of terms) {
-    const t = normalizeToken(term);
-    if (!t) continue;
-    if (t.length <= 3) {
-      const re = new RegExp(`\\b${escaped(t)}\\b`, "i");
-      if (re.test(lower)) matched.add(t);
-    } else if (lower.includes(t)) {
-      matched.add(t);
-    }
-  }
-  return Array.from(matched);
-}
-
-function aiMedSignals(paper: PubmedSummary, userKeywords: string[]) {
-  const aiTerms = dedupeTerms(AI_TERMS);
-  const medTerms = dedupeTerms([...MED_TERMS, ...userKeywords]);
-  const sourceText = `${paper.title} ${(paper.mesh_terms ?? []).join(" ")}`.toLowerCase();
-  const aiMatched = findTermMatches(sourceText, aiTerms);
-  const medMatched = findTermMatches(sourceText, medTerms);
-  const isAiMed = aiMatched.length > 0 && medMatched.length > 0;
-  const scoreRaw =
-    Math.min(aiMatched.length, 4) * 0.15 + Math.min(medMatched.length, 4) * 0.1;
-  const aiMedScore = Number(Math.min(1, scoreRaw).toFixed(4));
-  const topicKeywords = dedupeTerms([...aiMatched, ...medMatched]).slice(0, 16);
-  return { isAiMed, aiMedScore, topicKeywords };
-}
-
-function buildTopicRulesFromSlugs(topicSlugs: string[]) {
-  const rules: TopicRule[] = [];
-  for (const slug of topicSlugs) {
-    const parts = slug.toLowerCase().split(/[-_]/g);
-    const terms = new Set<string>();
-    for (const p of parts) {
-      for (const kw of TOPIC_KEYWORD_LIBRARY[p] ?? []) terms.add(kw);
-    }
-    if (!terms.size) {
-      for (const kw of TOPIC_KEYWORD_LIBRARY.decision) terms.add(kw);
-    }
-    rules.push({ slug, keywords: Array.from(terms) });
-  }
-  return rules;
-}
-
-function assignResearchTopics(paper: PubmedSummary, topicRules: TopicRule[]) {
-  const sourceText = `${paper.title} ${(paper.mesh_terms ?? []).join(" ")} ${paper.journal ?? ""}`.toLowerCase();
-  const topics: Array<{ slug: string; confidence: number; matchedTerms: string[] }> = [];
-
-  for (const rule of topicRules) {
-    const matchedTerms = findTermMatches(sourceText, rule.keywords);
-    if (!matchedTerms.length) continue;
-    const confidence = Number(
-      Math.min(1, 0.35 + Math.min(0.65, matchedTerms.length * 0.18)).toFixed(4),
-    );
-    topics.push({
-      slug: rule.slug,
-      confidence,
-      matchedTerms: matchedTerms.slice(0, 8),
-    });
-  }
-
-  return topics;
-}
-
-async function loadJournalQualityMap(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-): Promise<JournalQualityMatcher> {
-  const { data, error } = await supabase
-    .from("journal_quality")
-    .select("journal_name,aliases,tier,weight,impact_factor,jcr_quartile,cas_zone,is_active")
-    .eq("is_active", true);
-  if (error || !data) {
-    return { exactByName: new Map<string, JournalQualityRow>(), byAlias: new Map<string, JournalQualityRow>() };
-  }
-  const exactByName = new Map<string, JournalQualityRow>();
-  const byAlias = new Map<string, JournalQualityRow>();
-  for (const row of data as JournalQualityRow[]) {
-    const canonical = normalizeJournalKey(row.journal_name);
-    if (canonical) exactByName.set(canonical, row);
-    for (const alias of row.aliases ?? []) {
-      const normalized = normalizeJournalKey(alias);
-      if (normalized) byAlias.set(normalized, row);
-    }
-  }
-  return { exactByName, byAlias };
-}
-
-async function loadTopJournalTerms(supabase: ReturnType<typeof createServiceSupabaseClient>) {
-  const { data, error } = await supabase
-    .from("journal_quality")
-    .select("journal_name,aliases")
-    .eq("is_active", true)
-    .eq("tier", "top");
-  if (error || !data) return [] as string[];
-  const terms: string[] = [];
-  for (const row of data as Array<{ journal_name: string; aliases: string[] | null }>) {
-    terms.push(row.journal_name);
-    for (const a of row.aliases ?? []) terms.push(a);
-  }
-  return dedupeTerms(terms);
-}
-
-async function loadActiveJournalNames(supabase: ReturnType<typeof createServiceSupabaseClient>) {
-  const { data, error } = await supabase
-    .from("journal_quality")
-    .select("journal_name")
-    .eq("is_active", true);
-  if (error || !data) return [] as string[];
-  return dedupeTerms(
-    (data as Array<{ journal_name: string | null }>)
-      .map((row) => row.journal_name ?? "")
-      .filter(Boolean),
-  );
-}
-
-async function loadActiveJournals(supabase: ReturnType<typeof createServiceSupabaseClient>) {
-  const { data, error } = await supabase
-    .from("journal_quality")
-    .select("id,journal_name,aliases")
-    .eq("is_active", true);
-  if (error || !data) return [] as Array<{ id: string; journal_name: string; aliases: string[] | null }>;
-  return (data as Array<{ id: string; journal_name: string; aliases: string[] | null }>).filter(
-    (x) => Boolean(x.journal_name),
-  );
-}
-
-function resolveJournalQuality(
-  paper: PubmedSummary,
-  matcher: JournalQualityMatcher,
-) {
-  const journal = normalizeJournalKey(paper.journal ?? "");
-  if (!journal) return null;
-  const exact = matcher.exactByName.get(journal);
-  if (exact) return exact;
-  return matcher.byAlias.get(journal) ?? null;
-}
-
-function qualitySignals(args: {
-  aiMedScore: number;
-  journalMatched: JournalQualityRow | null;
-}) {
-  const dynamic = computeDynamicQualityScore({
-    aiMedScore: args.aiMedScore,
-    baseWeight: args.journalMatched?.weight ?? 0.5,
-    impactFactor: args.journalMatched?.impact_factor ?? null,
-    jcrQuartile: args.journalMatched?.jcr_quartile ?? null,
-    casZone: args.journalMatched?.cas_zone ?? null,
-  });
-  const qualityTier = args.journalMatched?.tier ?? "emerging";
-  return {
-    qualityScore: dynamic.qualityScore,
-    qualityTier,
-    journalIf: dynamic.impactFactor,
-    journalJcr: dynamic.jcrQuartile,
-    journalCasZone: dynamic.casZone,
-  };
-}
-
-async function scoreAndUpsertPapers(args: {
-  supabase: ReturnType<typeof createServiceSupabaseClient>;
-  summaries: PubmedSummary[];
-  journalMap: JournalQualityMatcher;
-}) {
-  const upsertRows: Record<string, unknown>[] = [];
-  const { data: topicRefRows, error: topicRefErr } = await args.supabase
-    .from("research_topics")
-    .select("id,slug")
-    .eq("is_active", true);
-  if (topicRefErr) {
-    throw new Error(`Failed to load research topics: ${topicRefErr.message}`);
-  }
-  const topicIdMap = new Map<string, string>();
-  const topicRules = buildTopicRulesFromSlugs((topicRefRows ?? []).map((r) => r.slug));
-  for (const r of topicRefRows ?? []) {
-    topicIdMap.set(r.slug, r.id);
-  }
-
-  const researchTopicsByPmid = new Map<
-    string,
-    Array<{ slug: string; confidence: number; matchedTerms: string[] }>
-  >();
-
-  for (const paper of args.summaries) {
-    const keywordSignals = aiMedSignals(paper, []);
-    const { data: rpcScore, error: rpcErr } = await args.supabase.rpc("calculate_ai_med_score", {
-      p_title: paper.title,
-      p_abstract: paper.abstract ?? "",
-    });
-    if (rpcErr) {
-      throw new Error(`Failed to score paper via calculate_ai_med_score: ${rpcErr.message}`);
-    }
-    const scoreObj = (rpcScore ?? {}) as { is_ai_med?: boolean; score?: number | string };
-    const isAiMed = Boolean(scoreObj.is_ai_med);
-    const aiMedScore = Number(scoreObj.score ?? 0);
-    if (!isAiMed) continue;
-    const journalMatched = resolveJournalQuality(paper, args.journalMap);
-    const quality = qualitySignals({
-      aiMedScore,
-      journalMatched,
-    });
-    const oa = await resolveOpenAccessByDoi(paper.doi);
-    upsertRows.push({
-      pmid: paper.pmid,
-      doi: paper.doi ?? null,
-      title: paper.title,
-      abstract: paper.abstract,
-      journal: paper.journal,
-      publication_date: paper.publication_date,
-      pubmed_url: paper.pubmed_url,
-      authors: paper.authors,
-      mesh_terms: paper.mesh_terms,
-      keywords: keywordSignals.topicKeywords,
-      is_ai_med: true,
-      ai_med_score: aiMedScore,
-      quality_score: quality.qualityScore,
-      quality_tier: quality.qualityTier,
-      journal_if: quality.journalIf,
-      journal_jcr: quality.journalJcr,
-      journal_cas_zone: quality.journalCasZone,
-      is_open_access: oa.is_open_access,
-      oa_pdf_url: oa.oa_pdf_url,
-      source_payload: paper.source_payload,
-      fetched_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-    const assignedTopics = assignResearchTopics(paper, topicRules);
-    if (assignedTopics.length) {
-      researchTopicsByPmid.set(paper.pmid, assignedTopics);
-    }
-    await randomDelay(120, 220);
-  }
-
-  if (!upsertRows.length) {
-    return { upsertRows, aiMedCount: 0 };
-  }
-
-  const { error: upsertErr } = await args.supabase
-    .from("papers")
-    .upsert(upsertRows, { onConflict: "pmid" });
-  if (upsertErr) {
-    throw new Error(`Failed to upsert papers: ${upsertErr.message}`);
-  }
-
-  const pmids = upsertRows.map((r) => String(r.pmid));
-  const { data: paperRows, error: paperRowsErr } = await args.supabase
-    .from("papers")
-    .select("id,pmid")
-    .in("pmid", pmids);
-  if (paperRowsErr) {
-    throw new Error(`Failed to load paper ids: ${paperRowsErr.message}`);
-  }
-
-  const relationRows: Array<{
-    paper_id: string;
-    topic_id: string;
-    confidence: number;
-    source: string;
-    matched_terms: string[];
-    updated_at: string;
-  }> = [];
-
-  for (const row of paperRows ?? []) {
-    const assigned = researchTopicsByPmid.get(row.pmid) ?? [];
-    for (const t of assigned) {
-      const topicId = topicIdMap.get(t.slug);
-      if (!topicId) continue;
-      relationRows.push({
-        paper_id: row.id,
-        topic_id: topicId,
-        confidence: t.confidence,
-        source: "rule",
-        matched_terms: t.matchedTerms,
-        updated_at: new Date().toISOString(),
-      });
-    }
-  }
-
-  if (relationRows.length) {
-    const { error: relationErr } = await args.supabase
-      .from("paper_research_topics")
-      .upsert(relationRows, { onConflict: "paper_id,topic_id" });
-    if (relationErr) {
-      throw new Error(`Failed to upsert paper research topics: ${relationErr.message}`);
-    }
-  }
-
-  return { upsertRows, aiMedCount: upsertRows.length };
-}
-
-async function readBackfillMonthOffset(supabase: ReturnType<typeof createServiceSupabaseClient>) {
-  try {
-    const { data, error } = await supabase
-      .from("sync_state")
-      .select("value")
-      .eq("key", "backfill_6m_month_offset")
-      .maybeSingle();
-    if (error) return 1;
-    const n = Number((data as { value?: string } | null)?.value ?? 1);
-    if (!Number.isFinite(n) || n < 1 || n > 6) return 1;
-    return n;
-  } catch {
-    return 1;
-  }
-}
-
-async function writeBackfillMonthOffset(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  offset: number,
-) {
-  try {
-    await supabase.from("sync_state").upsert(
-      {
-        key: "backfill_6m_month_offset",
-        value: String(offset),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "key" },
-    );
-  } catch {
-    return;
-  }
-}
-
 function monthRangeByOffset(monthOffset: number) {
   const now = new Date();
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -611,272 +129,13 @@ function monthRangeByOffset(monthOffset: number) {
   return { fromDate: fmt(start), toDate: fmt(end) };
 }
 
-async function pubmedEsearch(term: string, retmax: number) {
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    sort: "date",
-    retmax: String(retmax),
-    term,
-  });
-  if (process.env.NCBI_API_KEY) params.set("api_key", process.env.NCBI_API_KEY);
-  if (process.env.NCBI_TOOL) params.set("tool", process.env.NCBI_TOOL);
-  if (process.env.NCBI_EMAIL) params.set("email", process.env.NCBI_EMAIL);
-
-  const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${params.toString()}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return [];
-  const json = (await res.json()) as any;
-  const ids = json?.esearchresult?.idlist;
-  if (!Array.isArray(ids)) return [];
-  return ids.filter((x: unknown): x is string => typeof x === "string");
-}
-
-async function pubmedEsearchPaged(args: {
-  term: string;
-  retmax: number;
-  retstart: number;
-}): Promise<{ ids: string[]; totalCount: number }> {
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    sort: "date",
-    retmax: String(args.retmax),
-    retstart: String(args.retstart),
-    term: args.term,
-  });
-  if (process.env.NCBI_API_KEY) params.set("api_key", process.env.NCBI_API_KEY);
-  if (process.env.NCBI_TOOL) params.set("tool", process.env.NCBI_TOOL);
-  if (process.env.NCBI_EMAIL) params.set("email", process.env.NCBI_EMAIL);
-
-  const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${params.toString()}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return { ids: [], totalCount: 0 };
-  const json = (await res.json()) as any;
-  const result = json?.esearchresult;
-  const ids = Array.isArray(result?.idlist)
-    ? result.idlist.filter((x: unknown): x is string => typeof x === "string")
-    : [];
-  const totalCountRaw = Number(result?.count ?? 0);
-  const totalCount = Number.isFinite(totalCountRaw) ? totalCountRaw : 0;
-  return { ids, totalCount };
-}
-
-async function pubmedEsearchAll(args: {
-  term: string;
-  pageSize: number;
-  maxPages: number;
-  maxRecords: number;
-}) {
-  const collected: string[] = [];
-  let retstart = 0;
-  let totalCount = 0;
-  for (let page = 0; page < args.maxPages; page += 1) {
-    if (collected.length >= args.maxRecords) break;
-    const remaining = args.maxRecords - collected.length;
-    const retmax = Math.min(args.pageSize, remaining);
-    if (retmax <= 0) break;
-    const pageResult = await pubmedEsearchPaged({
-      term: args.term,
-      retmax,
-      retstart,
-    });
-    totalCount = Math.max(totalCount, pageResult.totalCount);
-    if (!pageResult.ids.length) break;
-    collected.push(...pageResult.ids);
-    retstart += pageResult.ids.length;
-    if (pageResult.ids.length < retmax) break;
-    if (retstart >= totalCount) break;
-    await randomDelay(180, 280);
-  }
-  return {
-    ids: dedupeIdList(collected).slice(0, args.maxRecords),
-    totalCount,
-  };
-}
-
-async function pubmedEsummary(ids: string[]) {
-  if (!ids.length) return [] as PubmedSummary[];
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    id: ids.join(","),
-  });
-  if (process.env.NCBI_API_KEY) params.set("api_key", process.env.NCBI_API_KEY);
-  if (process.env.NCBI_TOOL) params.set("tool", process.env.NCBI_TOOL);
-  if (process.env.NCBI_EMAIL) params.set("email", process.env.NCBI_EMAIL);
-
-  const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?${params.toString()}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return [] as PubmedSummary[];
-  const json = (await res.json()) as any;
-  const result = json?.result;
-  if (!result || typeof result !== "object") return [] as PubmedSummary[];
-
-  const items: PubmedSummary[] = [];
-  for (const id of ids) {
-    const item = result[id];
-    if (!item || typeof item !== "object") continue;
-
-    const pmid = asString(item.uid) ?? id;
-    const title = (asString(item.title) ?? "").trim();
-    if (!title) continue;
-
-    const articleIds = (item.articleids ?? []) as ESummaryArticleId[];
-    const doi = articleIds.find((x) => x?.idtype === "doi")?.value;
-
-    const authors = Array.isArray(item.authors)
-      ? (item.authors as ESummaryAuthor[])
-          .map((a) => asString(a?.name))
-          .filter((x): x is string => Boolean(x))
-      : [];
-
-    const mesh = Array.isArray(item.meshheadinglist)
-      ? (item.meshheadinglist as unknown[])
-          .map((x) => asString(x))
-          .filter((x): x is string => Boolean(x))
-      : [];
-
-    const date = toDateString(asString(item.pubdate));
-    const journal = asString(item.fulljournalname) ?? asString(item.source) ?? null;
-
-    items.push({
-      pmid,
-      doi,
-      title,
-      abstract: null,
-      journal,
-      publication_date: date,
-      pubmed_url: buildPubmedUrl(pmid),
-      authors,
-      mesh_terms: mesh,
-      keywords: [],
-      source_payload: item as Record<string, unknown>,
-    });
-  }
-  return items;
-}
-
-async function resolveOpenAccessByDoi(doi?: string): Promise<OpenAccessInfo> {
-  if (!doi) return { is_open_access: false, oa_pdf_url: null };
-  const email = process.env.UNPAYWALL_EMAIL || process.env.NCBI_EMAIL;
-  if (!email) return { is_open_access: false, oa_pdf_url: null };
-
-  const url = `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(email)}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return { is_open_access: false, oa_pdf_url: null };
-  const json = (await res.json()) as any;
-  const isOa = Boolean(json?.is_oa);
-  const pdf =
-    asString(json?.best_oa_location?.url_for_pdf) ??
-    asString(json?.best_oa_location?.url) ??
-    null;
-  return {
-    is_open_access: isOa,
-    oa_pdf_url: isOa ? pdf : null,
-  };
-}
-
-function chunk<T>(arr: T[], size: number) {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    out.push(arr.slice(i, i + size));
-  }
-  return out;
-}
-
-function decodeXmlEntities(input: string) {
-  return input
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/gi, "'");
-}
-
-function stripXmlTags(input: string) {
-  return input.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function parseAbstractFromArticleXml(articleXml: string) {
-  const abstractMatches = Array.from(
-    articleXml.matchAll(/<AbstractText\b[^>]*>([\s\S]*?)<\/AbstractText>/gi),
-  );
-  if (!abstractMatches.length) return null;
-  const parts = abstractMatches
-    .map((m) => stripXmlTags(decodeXmlEntities(m[1] ?? "")))
-    .filter(Boolean);
-  if (!parts.length) return null;
-  return parts.join("\n");
-}
-
-async function pubmedEfetchAbstractMap(ids: string[]) {
-  if (!ids.length) return new Map<string, string>();
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "xml",
-    id: ids.join(","),
-  });
-  if (process.env.NCBI_API_KEY) params.set("api_key", process.env.NCBI_API_KEY);
-  if (process.env.NCBI_TOOL) params.set("tool", process.env.NCBI_TOOL);
-  if (process.env.NCBI_EMAIL) params.set("email", process.env.NCBI_EMAIL);
-
-  const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?${params.toString()}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return new Map<string, string>();
-  const xml = await res.text();
-  const map = new Map<string, string>();
-  const articleBlocks = Array.from(xml.matchAll(/<PubmedArticle>[\s\S]*?<\/PubmedArticle>/gi));
-  for (const block of articleBlocks) {
-    const articleXml = block[0];
-    const pmidMatch = articleXml.match(/<PMID[^>]*>(\d+)<\/PMID>/i);
-    const pmid = pmidMatch?.[1];
-    if (!pmid) continue;
-    const abstract = parseAbstractFromArticleXml(articleXml);
-    if (abstract) {
-      map.set(pmid, abstract);
-    }
-  }
-  return map;
-}
-
-async function enrichSummariesWithAbstracts(summaries: PubmedSummary[]) {
-  if (!summaries.length) return summaries;
-  const byPmid = new Map<string, PubmedSummary>();
-  for (const s of summaries) {
-    byPmid.set(s.pmid, s);
-  }
-  const ids = summaries.map((s) => s.pmid);
-  const groups = chunk(ids, 20);
-  for (const group of groups) {
-    const abstractMap = await pubmedEfetchAbstractMap(group);
-    for (const [pmid, abstract] of abstractMap.entries()) {
-      const curr = byPmid.get(pmid);
-      if (curr) curr.abstract = abstract;
-    }
-    await randomDelay(120, 220);
-  }
-  return summaries;
-}
-
 export async function runPubmedSyncJob() {
   const supabase = createServiceSupabaseClient();
   const journalMap = await loadJournalQualityMap(supabase);
   const topJournalTerms = await loadTopJournalTerms(supabase);
   const activeJournalNames = await loadActiveJournalNames(supabase);
-
-  const { data: profileRows, error: profileErr } = await supabase
-    .from("profiles")
-    .select("subscription_keywords, subscription_mesh_terms")
-    .eq("is_active", true);
-
-  if (profileErr) {
-    throw new Error(`Failed to read profiles: ${profileErr.message}`);
-  }
-
-  const keywords = toKeywordList((profileRows ?? []) as ProfileKeywordRow[]);
+  const profileRows = await loadActiveProfileKeywordRows(supabase);
+  const keywords = toKeywordList(profileRows);
   const broadQuery = buildQueryFromKeywords(keywords);
   const broadIds = await pubmedEsearch(broadQuery, 200);
   const topJournalQuery = buildTopJournalQuery(topJournalTerms);
@@ -1000,11 +259,7 @@ export async function runJournalSyncJob() {
       totalFound += papersFound;
 
       if (pmids.length) {
-        const { data: existingRows } = await supabase
-          .from("papers")
-          .select("pmid")
-          .in("pmid", pmids);
-        const existingSet = new Set((existingRows ?? []).map((r) => r.pmid));
+        const existingSet = await loadExistingPaperPmids(supabase, pmids);
         const newPmids = pmids.filter((id) => !existingSet.has(id));
         if (newPmids.length) {
           const chunks = chunk(newPmids, 20);
@@ -1031,7 +286,7 @@ export async function runJournalSyncJob() {
       errorMessage = error instanceof Error ? error.message.slice(0, 500) : "unknown";
     }
 
-    await supabase.from("journal_sync_log").insert({
+    await insertJournalSyncLog(supabase, {
       journal_quality_id: journal.id,
       journal_name: journal.journal_name,
       sync_from: weekAgo.toISOString().slice(0, 10),
@@ -1048,14 +303,10 @@ export async function runJournalSyncJob() {
     await randomDelay(350, 500);
   }
 
-  await supabase.from("sync_state").upsert(
-    {
-      key: "journal_sync_last_run",
-      value: today.toISOString().slice(0, 10),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "key" },
-  );
+  await writeSyncStateValue(supabase, {
+    key: "journal_sync_last_run",
+    value: today.toISOString().slice(0, 10),
+  });
 
   return {
     journalsSynced: journals.length,
@@ -1069,19 +320,11 @@ export async function runJournalSyncJob() {
 
 export async function runKeywordSyncJob() {
   const supabase = createServiceSupabaseClient();
-  const minimaxApiKey = process.env.MINIMAX_API_KEY?.trim() ?? "";
-  const minimaxGroupId = process.env.MINIMAX_GROUP_ID?.trim() ?? "";
 
-  const { data: profiles, error: profileErr } = await supabase
-    .from("profiles")
-    .select("subscription_keywords")
-    .not("subscription_keywords", "is", null);
-  if (profileErr) {
-    throw new Error(`Failed to load profile keywords: ${profileErr.message}`);
-  }
+  const profiles = await loadProfileSubscriptionKeywordRows(supabase);
 
   const allKeywords = new Set<string>();
-  for (const row of (profiles ?? []) as Array<{ subscription_keywords?: string[] | null }>) {
+  for (const row of profiles) {
     for (const kw of row.subscription_keywords ?? []) {
       const v = kw.trim();
       if (v) allKeywords.add(v);
@@ -1112,138 +355,63 @@ export async function runKeywordSyncJob() {
     };
   }
 
-  let totalFound = 0;
-  let estimatedTotalFound = 0;
-  let totalNew = 0;
-  let totalPassed = 0;
   let llmCalls = 0;
-  const pmidKeywordMap = new Map<string, Set<string>>();
-  const keywordWindowMap = new Map<string, Set<number>>();
-  const keywordFoundMap = new Map<string, number>();
-  const keywordEstimatedFoundMap = new Map<string, number>();
-
-  const extractQueryText = (value: unknown) => {
-    if (typeof value === "string") return value;
-    if (Array.isArray(value) && value.length > 0) {
-      const first = value[0] as any;
-      if (typeof first === "string") return first;
-      if (typeof first?.build_pubmed_query_for_keyword === "string") {
-        return first.build_pubmed_query_for_keyword as string;
-      }
-    }
-    if (typeof (value as any)?.build_pubmed_query_for_keyword === "string") {
-      return (value as any).build_pubmed_query_for_keyword as string;
-    }
-    return "";
-  };
-
-  const parseJsonFromModelOutput = (text: string) => {
-    const trimmed = text.trim();
-    const cleaned = trimmed.startsWith("```")
-      ? trimmed
-          .replace(/^```[a-zA-Z]*\n?/, "")
-          .replace(/```$/, "")
-          .trim()
-      : trimmed;
-    return JSON.parse(cleaned) as {
-      pubmed_query?: string;
-      synonyms?: string[];
-      title_required?: string[];
-    };
-  };
-
-  const callMiniMax = async (prompt: string) => {
-    if (!minimaxApiKey) return null;
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${minimaxApiKey}`,
-    };
-    if (minimaxGroupId) {
-      headers["GroupId"] = minimaxGroupId;
-      headers["X-Group-Id"] = minimaxGroupId;
-    }
-    const res = await fetch("https://api.minimax.chat/v1/text/chatcompletion_v2", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: "MiniMax-Text-01",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 500,
-        temperature: 0.1,
-      }),
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      return null;
-    }
-    const data = (await res.json()) as any;
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || !content.trim()) return null;
-    try {
-      return parseJsonFromModelOutput(content);
-    } catch {
-      return null;
-    }
-  };
+  const stats = new KeywordSyncStats();
 
   for (const keyword of keywordList) {
     try {
       let pubmedQuery = "";
 
-      const { data: keywordFlagData } = await supabase.rpc("get_or_flag_keyword", {
-        p_keyword: keyword,
-      });
+      const { data: keywordFlagData } = await getOrFlagKeyword(supabase, keyword);
       const flagRow = Array.isArray(keywordFlagData)
         ? (keywordFlagData[0] as any)
         : (keywordFlagData as any);
       const status = typeof flagRow?.status === "string" ? flagRow.status : "unknown";
 
       if (status === "cached") {
-        const { data: queryData, error: qErr } = await supabase.rpc("build_pubmed_query_for_keyword", {
-          p_keyword: keyword,
-          p_days_back: 7,
+        const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
+          keyword,
+          daysBack: 7,
         });
-        if (!qErr) pubmedQuery = extractQueryText(queryData);
+        if (!qErr) pubmedQuery = extractPubmedQueryText(queryData);
       } else {
         const prompt = typeof flagRow?.prompt === "string" ? flagRow.prompt : "";
-        const synonymData = prompt ? await callMiniMax(prompt) : null;
+        const synonymData = prompt ? await callMiniMaxKeywordExpansion(prompt) : null;
         if (synonymData?.synonyms?.length) {
           llmCalls += 1;
-          const saveArgs = {
-            p_keyword: keyword,
-            p_synonyms: synonymData.synonyms,
-            p_title_required: synonymData.title_required?.length
-              ? synonymData.title_required
-              : synonymData.synonyms,
-            p_pubmed_query: synonymData.pubmed_query ?? null,
-          };
-          const { error: saveErr } = await supabase.rpc("save_llm_synonyms", saveArgs);
+          const titleRequired = synonymData.title_required?.length
+            ? synonymData.title_required
+            : synonymData.synonyms;
+          const { error: saveErr } = await saveLlmSynonyms(supabase, {
+            keyword,
+            synonyms: synonymData.synonyms,
+            titleRequired,
+            pubmedQuery: synonymData.pubmed_query ?? null,
+          });
           if (saveErr) {
-            await supabase.rpc("save_llm_synonyms", {
-              p_keyword: keyword,
-              p_synonyms: synonymData.synonyms,
-              p_title_required: synonymData.title_required?.length
-                ? synonymData.title_required
-                : synonymData.synonyms,
+            await saveLlmSynonyms(supabase, {
+              keyword,
+              synonyms: synonymData.synonyms,
+              titleRequired,
             });
           }
-          const { data: queryData, error: qErr } = await supabase.rpc("build_pubmed_query_for_keyword", {
-            p_keyword: keyword,
-            p_days_back: 7,
+          const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
+            keyword,
+            daysBack: 7,
           });
-          if (!qErr) pubmedQuery = extractQueryText(queryData);
+          if (!qErr) pubmedQuery = extractPubmedQueryText(queryData);
         }
       }
 
       if (!pubmedQuery) continue;
 
       for (const daysBack of syncWindows) {
-        const { data: queryData, error: qErr } = await supabase.rpc("build_pubmed_query_for_keyword", {
-          p_keyword: keyword,
-          p_days_back: daysBack,
+        const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
+          keyword,
+          daysBack,
         });
         if (qErr) continue;
-        const windowQuery = extractQueryText(queryData);
+        const windowQuery = extractPubmedQueryText(queryData);
         if (!windowQuery) continue;
         const result = await pubmedEsearchAll({
           term: windowQuery,
@@ -1256,20 +424,12 @@ export async function runKeywordSyncJob() {
           continue;
         }
 
-        totalFound += result.ids.length;
-        estimatedTotalFound += Math.max(result.totalCount, result.ids.length);
-        keywordFoundMap.set(keyword, (keywordFoundMap.get(keyword) ?? 0) + result.ids.length);
-        keywordEstimatedFoundMap.set(
+        stats.recordSearchWindow({
           keyword,
-          (keywordEstimatedFoundMap.get(keyword) ?? 0) + Math.max(result.totalCount, result.ids.length),
-        );
-        if (!keywordWindowMap.has(keyword)) keywordWindowMap.set(keyword, new Set<number>());
-        keywordWindowMap.get(keyword)!.add(daysBack);
-
-        for (const pmid of result.ids) {
-          if (!pmidKeywordMap.has(pmid)) pmidKeywordMap.set(pmid, new Set<string>());
-          pmidKeywordMap.get(pmid)!.add(keyword);
-        }
+          daysBack,
+          ids: result.ids,
+          totalCount: result.totalCount,
+        });
         await randomDelay(280, 420);
       }
     } catch {
@@ -1277,56 +437,26 @@ export async function runKeywordSyncJob() {
     }
   }
 
-  const deduped = Array.from(pmidKeywordMap.keys());
+  const deduped = stats.getDedupedPmids();
   if (!deduped.length) {
     return {
       keywordCount: keywordList.length,
       keywords: keywordList,
       windows: syncWindows,
-      totalFound,
-      estimatedTotalFound,
-      totalNew: 0,
-      totalPassed: 0,
-      totalDropped: 0,
+      ...stats.buildSummary(keywordList),
       llmCalls,
-      keywordStats: keywordList.map((keyword) => ({
-        keyword,
-        found: keywordFoundMap.get(keyword) ?? 0,
-        estimatedFound: keywordEstimatedFoundMap.get(keyword) ?? 0,
-        new: 0,
-        passed: 0,
-        dropped: 0,
-        windows: Array.from(keywordWindowMap.get(keyword) ?? []),
-      })),
     };
   }
 
-  const { data: existingRows } = await supabase
-    .from("papers")
-    .select("pmid")
-    .in("pmid", deduped);
-  const existing = new Set((existingRows ?? []).map((r) => r.pmid));
+  const existing = await loadExistingPaperPmids(supabase, deduped);
   const newPmids = deduped.filter((id) => !existing.has(id));
   if (!newPmids.length) {
     return {
       keywordCount: keywordList.length,
       keywords: keywordList,
       windows: syncWindows,
-      totalFound,
-      estimatedTotalFound,
-      totalNew: 0,
-      totalPassed: 0,
-      totalDropped: 0,
+      ...stats.buildSummary(keywordList),
       llmCalls,
-      keywordStats: keywordList.map((keyword) => ({
-        keyword,
-        found: keywordFoundMap.get(keyword) ?? 0,
-        estimatedFound: keywordEstimatedFoundMap.get(keyword) ?? 0,
-        new: 0,
-        passed: 0,
-        dropped: 0,
-        windows: Array.from(keywordWindowMap.get(keyword) ?? []),
-      })),
     };
   }
 
@@ -1338,12 +468,10 @@ export async function runKeywordSyncJob() {
     await randomDelay(180, 320);
   }
   await enrichSummariesWithAbstracts(summaries);
-  const keywordNewMap = new Map<string, number>();
-  const keywordPassedMap = new Map<string, number>();
   for (const paper of summaries) {
-    const { data: scoreData, error: scoreErr } = await supabase.rpc("calculate_ai_med_score", {
-      p_title: paper.title,
-      p_abstract: paper.abstract ?? "",
+    const { data: scoreData, error: scoreErr } = await calculateAiMedScore(supabase, {
+      title: paper.title,
+      abstract: paper.abstract ?? "",
     });
     if (scoreErr) {
       continue;
@@ -1351,17 +479,9 @@ export async function runKeywordSyncJob() {
     const scoreObj = (scoreData ?? {}) as { score?: number | string; is_ai_med?: boolean };
     const aiScore = Number(scoreObj.score ?? 0);
 
-    const { data: journalInfoData } = await supabase.rpc("get_journal_tier_and_weight", {
-      p_journal: paper.journal ?? "",
-    });
+    const { data: journalInfoData } = await getJournalTierAndWeight(supabase, paper.journal ?? "");
     const journalRow = (Array.isArray(journalInfoData) ? journalInfoData[0] : journalInfoData) as
-      | {
-          tier?: string;
-          weight?: number | string;
-          impact_factor?: number | string | null;
-          jcr?: string | null;
-          cas_zone?: string | null;
-        }
+      | JournalTierWeightResult
       | undefined;
     const tier = (journalRow?.tier ?? "emerging") as "top" | "core" | "emerging";
     const isAiMed = Boolean(scoreObj.is_ai_med) && tier !== "emerging";
@@ -1375,7 +495,7 @@ export async function runKeywordSyncJob() {
     const qualityScore = dynamic.qualityScore;
     const oa = await resolveOpenAccessByDoi(paper.doi);
 
-    const matchedKeywords = Array.from(pmidKeywordMap.get(paper.pmid) ?? []);
+    const matchedKeywords = stats.getKeywordsForPmid(paper.pmid);
     const existingPayload =
       paper.source_payload && typeof paper.source_payload === "object" ? paper.source_payload : {};
     const sourcePayload = {
@@ -1387,76 +507,41 @@ export async function runKeywordSyncJob() {
       },
     };
 
-    const { error: upsertErr } = await supabase.from("papers").upsert(
-      {
-        pmid: paper.pmid,
-        doi: paper.doi ?? null,
-        title: paper.title,
-        abstract: paper.abstract,
-        journal: paper.journal,
-        publication_date: paper.publication_date,
-        pubmed_url: paper.pubmed_url,
-        authors: paper.authors,
-        mesh_terms: paper.mesh_terms,
-        keywords: paper.keywords,
-        is_open_access: oa.is_open_access,
-        oa_pdf_url: oa.oa_pdf_url,
-        ai_med_score: aiScore,
-        is_ai_med: isAiMed,
-        quality_tier: tier,
-        quality_score: qualityScore,
-        journal_if: dynamic.impactFactor,
-        journal_jcr: dynamic.jcrQuartile,
-        journal_cas_zone: dynamic.casZone,
-        source_payload: sourcePayload,
-        fetched_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "pmid", ignoreDuplicates: true },
-    );
-    if (!upsertErr) {
-      totalNew += 1;
-      for (const kw of matchedKeywords) {
-        keywordNewMap.set(kw, (keywordNewMap.get(kw) ?? 0) + 1);
-      }
-      if (isAiMed) {
-        totalPassed += 1;
-        for (const kw of matchedKeywords) {
-          keywordPassedMap.set(kw, (keywordPassedMap.get(kw) ?? 0) + 1);
-        }
-      }
+    const upsertResult = await upsertKeywordSyncedPaper(supabase, {
+      pmid: paper.pmid,
+      doi: paper.doi ?? null,
+      title: paper.title,
+      abstract: paper.abstract,
+      journal: paper.journal,
+      publication_date: paper.publication_date,
+      pubmed_url: paper.pubmed_url,
+      authors: paper.authors,
+      mesh_terms: paper.mesh_terms,
+      keywords: paper.keywords,
+      is_open_access: oa.is_open_access,
+      oa_pdf_url: oa.oa_pdf_url,
+      ai_med_score: aiScore,
+      is_ai_med: isAiMed,
+      quality_tier: tier,
+      quality_score: qualityScore,
+      journal_if: dynamic.impactFactor,
+      journal_jcr: dynamic.jcrQuartile,
+      journal_cas_zone: dynamic.casZone,
+      source_payload: sourcePayload,
+      fetched_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    if (upsertResult.ok) {
+      stats.recordUpsert({ matchedKeywords, isAiMed });
     }
     await randomDelay(120, 220);
   }
-
-  const totalDropped = Math.max(0, totalNew - totalPassed);
-  const keywordStats = keywordList.map((keyword) => {
-    const found = keywordFoundMap.get(keyword) ?? 0;
-    const estimatedFound = keywordEstimatedFoundMap.get(keyword) ?? 0;
-    const nextNew = keywordNewMap.get(keyword) ?? 0;
-    const passed = keywordPassedMap.get(keyword) ?? 0;
-    const dropped = Math.max(0, nextNew - passed);
-    return {
-      keyword,
-      found,
-      estimatedFound,
-      new: nextNew,
-      passed,
-      dropped,
-      windows: Array.from(keywordWindowMap.get(keyword) ?? []),
-    };
-  });
 
   return {
     keywordCount: keywordList.length,
     keywords: keywordList,
     windows: syncWindows,
-    totalFound,
-    estimatedTotalFound,
-    totalNew,
-    totalPassed,
-    totalDropped,
+    ...stats.buildSummary(keywordList),
     llmCalls,
-    keywordStats,
   };
 }

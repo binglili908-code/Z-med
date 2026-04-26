@@ -1,35 +1,20 @@
 import { computeDynamicQualityScore } from "@/lib/journal-score";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
-
-type JournalQualityRow = {
-  journal_name: string;
-  aliases: string[] | null;
-  tier: string;
-  weight: number | null;
-  impact_factor: number | null;
-  jcr_quartile: string | null;
-  cas_zone: string | null;
-};
-
-type PaperRow = {
-  id: string;
-  pmid: string;
-  journal: string | null;
-  ai_med_score: number | null;
-  quality_score: number | null;
-  quality_tier: string | null;
-  journal_if: number | null;
-  journal_jcr: string | null;
-  journal_cas_zone: string | null;
-  source_payload: Record<string, unknown> | null;
-};
+import {
+  listQualityJournalRows,
+  listQualityRecomputePaperBatch,
+  readQualityRecomputeCursor,
+  updatePaperQualityRecompute,
+  writeQualityRecomputeCursor,
+  type QualityJournalRow,
+  type QualityPaperUpdate,
+} from "@/server/repositories/quality-recompute";
 
 type JournalMatcher = {
-  exactByName: Map<string, JournalQualityRow>;
-  byAlias: Map<string, JournalQualityRow>;
+  exactByName: Map<string, QualityJournalRow>;
+  byAlias: Map<string, QualityJournalRow>;
 };
 
-const CURSOR_KEY = "quality_recompute_cursor_id";
 const BATCH_SIZE_DEFAULT = 500;
 const BATCH_SIZE_MAX = 1000;
 
@@ -37,43 +22,14 @@ function normalizeJournalKey(input: string) {
   return input.trim().toLowerCase();
 }
 
-async function readCursor(supabase: ReturnType<typeof createServiceSupabaseClient>) {
-  const { data } = await supabase
-    .from("sync_state")
-    .select("value")
-    .eq("key", CURSOR_KEY)
-    .maybeSingle();
-  return ((data as { value?: string } | null)?.value ?? "").trim();
-}
-
-async function writeCursor(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  cursor: string,
-) {
-  await supabase.from("sync_state").upsert(
-    {
-      key: CURSOR_KEY,
-      value: cursor,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "key" },
-  );
-}
-
 async function loadJournalMatcher(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
 ): Promise<JournalMatcher> {
-  const { data, error } = await supabase
-    .from("journal_quality")
-    .select("journal_name,aliases,tier,weight,impact_factor,jcr_quartile,cas_zone")
-    .eq("is_active", true);
-  if (error || !data) {
-    throw new Error(`Load journal_quality failed: ${error?.message ?? "unknown error"}`);
-  }
+  const data = await listQualityJournalRows(supabase);
 
-  const exactByName = new Map<string, JournalQualityRow>();
-  const byAlias = new Map<string, JournalQualityRow>();
-  for (const row of data as JournalQualityRow[]) {
+  const exactByName = new Map<string, QualityJournalRow>();
+  const byAlias = new Map<string, QualityJournalRow>();
+  for (const row of data) {
     const key = normalizeJournalKey(row.journal_name);
     if (key) exactByName.set(key, row);
     for (const alias of row.aliases ?? []) {
@@ -87,7 +43,7 @@ async function loadJournalMatcher(
 function resolveJournal(
   journalName: string | null,
   matcher: JournalMatcher,
-): JournalQualityRow | null {
+): QualityJournalRow | null {
   const key = normalizeJournalKey(journalName ?? "");
   if (!key) return null;
   return matcher.exactByName.get(key) ?? matcher.byAlias.get(key) ?? null;
@@ -122,32 +78,17 @@ export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
   );
 
   const matcher = await loadJournalMatcher(supabase);
-  const cursor = await readCursor(supabase);
+  const cursor = await readQualityRecomputeCursor(supabase);
 
   const cutoffDate = new Date(Date.now() - 183 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  let query = supabase
-    .from("papers")
-    .select(
-      "id,pmid,journal,ai_med_score,quality_score,quality_tier,journal_if,journal_jcr,journal_cas_zone,source_payload",
-    )
-    .eq("is_ai_med", true)
-    .gte("publication_date", cutoffDate)
-    .order("id", { ascending: true })
-    .limit(batchSize);
-
-  if (cursor) {
-    query = query.gt("id", cursor);
-  }
-
-  const { data, error } = await query;
-  if (error) {
-    throw new Error(`Load papers for recompute failed: ${error.message}`);
-  }
-
-  const rows = (data ?? []) as PaperRow[];
+  const rows = await listQualityRecomputePaperBatch(supabase, {
+    cutoffDate,
+    cursor,
+    batchSize,
+  });
   if (!rows.length) {
     if (cursor) {
-      await writeCursor(supabase, "");
+      await writeQualityRecomputeCursor(supabase, "");
       return {
         processedCount: 0,
         updatedCount: 0,
@@ -204,20 +145,18 @@ export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
       nextQuality: dynamic.qualityScore,
     });
 
-    const { error: updateErr } = await supabase
-      .from("papers")
-      .update({
-        quality_score: dynamic.qualityScore,
-        quality_tier: nextTier,
-        journal_if: dynamic.impactFactor,
-        journal_jcr: dynamic.jcrQuartile,
-        journal_cas_zone: dynamic.casZone,
-        source_payload: payload,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", row.id);
+    const updatePayload: QualityPaperUpdate = {
+      quality_score: dynamic.qualityScore,
+      quality_tier: nextTier,
+      journal_if: dynamic.impactFactor,
+      journal_jcr: dynamic.jcrQuartile,
+      journal_cas_zone: dynamic.casZone,
+      source_payload: payload,
+      updated_at: new Date().toISOString(),
+    };
 
-    if (updateErr) {
+    const updateResult = await updatePaperQualityRecompute(supabase, row.id, updatePayload);
+    if (!updateResult.ok) {
       failedCount += 1;
       continue;
     }
@@ -225,7 +164,7 @@ export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
   }
 
   const lastId = rows[rows.length - 1]?.id ?? "";
-  await writeCursor(supabase, lastId);
+  await writeQualityRecomputeCursor(supabase, lastId);
 
   return {
     processedCount: rows.length,

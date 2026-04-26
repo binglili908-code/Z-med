@@ -3,6 +3,12 @@ import { NextResponse } from "next/server";
 import { callMiniMaxChat } from "@/lib/minimax";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
+import {
+  getPaperForTranslation,
+  recordByokTranslationUsage,
+  savePaperTranslationFields,
+  type PaperTranslationRow,
+} from "@/server/repositories/paper-translation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,12 +65,12 @@ export async function POST(
 
   const { id: paperId } = await params;
   const service = createServiceSupabaseClient();
-  const { data: paper, error: pErr } = await service
-    .from("papers")
-    .select("id,title,title_zh,journal,abstract,abstract_zh,is_open_access")
-    .eq("id", paperId)
-    .maybeSingle();
-  if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
+  let paper: PaperTranslationRow | null;
+  try {
+    paper = await getPaperForTranslation(service, paperId);
+  } catch (error) {
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+  }
   if (!paper) return NextResponse.json({ error: "Paper not found" }, { status: 404 });
   if (paper.title_zh && paper.abstract_zh) {
     return NextResponse.json({ ok: true, title_zh: paper.title_zh, abstract_zh: paper.abstract_zh });
@@ -96,35 +102,31 @@ export async function POST(
     const parsed = parseTranslationResult(result.content);
     const titleZh = (paper.title_zh || parsed.titleZh || paper.title || "").slice(0, 120);
     const abstractZh = paper.abstract_zh || parsed.abstractZh || paper.abstract || "No abstract available.";
-    const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
-    if (!paper.title_zh && parsed.titleZh) update.title_zh = parsed.titleZh.slice(0, 120);
-    if (!paper.abstract_zh && parsed.abstractZh) update.abstract_zh = parsed.abstractZh;
-    await service.from("papers").update(update).eq("id", paperId);
+    await savePaperTranslationFields(service, paperId, {
+      titleZh: !paper.title_zh ? parsed.titleZh : null,
+      abstractZh: !paper.abstract_zh ? parsed.abstractZh : null,
+    });
 
-    await service.from("byok_usage_log").insert({
-      user_id: user.id,
-      paper_id: paperId,
+    await recordByokTranslationUsage(service, {
+      userId: user.id,
+      paperId,
       provider: "minimax",
       model,
-      usage_type: "translate",
-      input_tokens: inputTokens ?? null,
-      output_tokens: outputTokens ?? null,
+      inputTokens,
+      outputTokens,
       status: "success",
-      created_at: new Date().toISOString(),
     });
 
     return NextResponse.json({ ok: true, title_zh: titleZh, abstract_zh: abstractZh });
   } catch (e: unknown) {
-    await service.from("byok_usage_log").insert({
-      user_id: user.id,
-      paper_id: paperId,
+    await recordByokTranslationUsage(service, {
+      userId: user.id,
+      paperId,
       provider: "minimax",
       model,
-      usage_type: "translate",
-      input_tokens: inputTokens ?? null,
-      output_tokens: outputTokens ?? null,
+      inputTokens,
+      outputTokens,
       status: "failed",
-      created_at: new Date().toISOString(),
     });
     return NextResponse.json({
       ok: true,

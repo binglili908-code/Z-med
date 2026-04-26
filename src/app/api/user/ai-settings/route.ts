@@ -4,14 +4,30 @@ import { encryptText } from "@/lib/crypto-util";
 import { isByokProvider } from "@/lib/byok-config";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
+import {
+  getByokSettings,
+  saveByokSettings,
+} from "@/server/repositories/byok-settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type AiSettingsRequestBody = {
+  provider?: string | null;
+  apiKey?: string | null;
+  model?: string | null;
+  ai_digest_enabled?: boolean;
+  clearKey?: boolean;
+};
 
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
   return m?.[1];
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function GET(req: Request) {
@@ -25,12 +41,12 @@ export async function GET(req: Request) {
   if (userErr || !user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const service = createServiceSupabaseClient();
-  const { data: profile, error } = await service
-    .from("profiles")
-    .select("byok_provider,byok_api_key_encrypted,byok_model,ai_digest_enabled")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  let profile;
+  try {
+    profile = await getByokSettings(service, user.id);
+  } catch (error) {
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+  }
 
   const masked =
     typeof profile?.byok_api_key_encrypted === "string" && profile.byok_api_key_encrypted
@@ -54,15 +70,9 @@ export async function PUT(req: Request) {
   } = await userClient.auth.getUser();
   if (userErr || !user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: {
-    provider?: string | null;
-    apiKey?: string | null;
-    model?: string | null;
-    ai_digest_enabled?: boolean;
-    clearKey?: boolean;
-  };
+  let body: AiSettingsRequestBody;
   try {
-    body = (await req.json()) as any;
+    body = (await req.json()) as AiSettingsRequestBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
@@ -73,24 +83,34 @@ export async function PUT(req: Request) {
   }
 
   const service = createServiceSupabaseClient();
-  const update: Record<string, any> = {
-    id: user.id,
-    byok_provider: provider,
-    byok_model: body.model?.trim() || null,
-    ai_digest_enabled: typeof body.ai_digest_enabled === "boolean" ? body.ai_digest_enabled : true,
-    updated_at: new Date().toISOString(),
-  };
+  let encryptedApiKey: string | null | undefined;
+  let shouldUpdateApiKey = false;
   if (body.clearKey) {
-    update.byok_api_key_encrypted = null;
+    encryptedApiKey = null;
+    shouldUpdateApiKey = true;
   } else if (body.apiKey && body.apiKey.trim()) {
     try {
-      update.byok_api_key_encrypted = encryptText(body.apiKey.trim());
-    } catch (e: any) {
-      return NextResponse.json({ error: e?.message || "Encrypt failed" }, { status: 500 });
+      encryptedApiKey = encryptText(body.apiKey.trim());
+      shouldUpdateApiKey = true;
+    } catch (error) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) || "Encrypt failed" },
+        { status: 500 },
+      );
     }
   }
 
-  const { error } = await service.from("profiles").upsert(update, { onConflict: "id" });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    await saveByokSettings(service, user.id, {
+      provider,
+      model: body.model?.trim() || null,
+      aiDigestEnabled: typeof body.ai_digest_enabled === "boolean" ? body.ai_digest_enabled : true,
+      encryptedApiKey,
+      shouldUpdateApiKey,
+    });
+  } catch (error) {
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+  }
+
   return NextResponse.json({ ok: true });
 }

@@ -1,3 +1,5 @@
+import { tryFetchWithRetry } from "@/lib/external-fetch";
+
 export type PubmedPaper = {
   pmid: string;
   title: string;
@@ -13,6 +15,16 @@ type DailyPapersResult = {
   query: string;
   fetchedAt: string;
 };
+
+function fetchDailyPubmed(url: string, label: string) {
+  return tryFetchWithRetry(url, {
+    next: { revalidate: 60 * 60 * 24 },
+    label,
+    retries: 1,
+    retryDelayMs: 500,
+    timeoutMs: 15000,
+  });
+}
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
@@ -57,10 +69,8 @@ async function esearchPubmedIds(args: {
   if (email) params.set("email", email);
 
   const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${params.toString()}`;
-  const res = await fetch(url, {
-    next: { revalidate: 60 * 60 * 24 },
-  });
-  if (!res.ok) return [];
+  const res = await fetchDailyPubmed(url, "Daily PubMed esearch");
+  if (!res?.ok) return [];
   const json = (await res.json()) as any;
   const list = json?.esearchresult?.idlist;
   if (!Array.isArray(list)) return [];
@@ -83,10 +93,8 @@ async function esummaryPubmed(ids: string[]): Promise<PubmedPaper[]> {
   if (email) params.set("email", email);
 
   const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?${params.toString()}`;
-  const res = await fetch(url, {
-    next: { revalidate: 60 * 60 * 24 },
-  });
-  if (!res.ok) return [];
+  const res = await fetchDailyPubmed(url, "Daily PubMed esummary");
+  if (!res?.ok) return [];
   const json = (await res.json()) as any;
   const result = json?.result;
   if (!result || typeof result !== "object") return [];

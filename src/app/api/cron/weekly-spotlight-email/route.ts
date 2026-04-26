@@ -1,8 +1,5 @@
-import { NextResponse } from "next/server";
-
-import { authorizeDeveloperRequest } from "@/lib/dev-admin-auth";
-import { isDevBypassAuthEnabled } from "@/lib/supabase/env";
 import { runWeeklySpotlightEmailJob } from "@/lib/weekly-spotlight-email";
+import { runCronRoute } from "@/server/cron/run-cron-route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -84,47 +81,21 @@ async function executeJob(manualOptions: ManualJobOptions, triggerSource: "cron"
 }
 
 export async function GET(req: Request) {
-  const auth = await authorizeDeveloperRequest(req);
-  if (!auth.authorized) {
-    return auth.response;
-  }
-
-  try {
+  return runCronRoute(req, async () => {
     const options = parseGetOptions(req);
     const result = await executeJob(options, hasManualOverride(options) ? "manual" : "cron");
-    return NextResponse.json({
-      ok: true,
-      actor: auth.actor,
-      devBypassAuth: isDevBypassAuthEnabled(),
+    return {
       ...result,
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 },
-    );
-  }
+    };
+  });
 }
 
 export async function POST(req: Request) {
-  const auth = await authorizeDeveloperRequest(req);
-  if (!auth.authorized) {
-    return auth.response;
-  }
-
-  try {
+  return runCronRoute(req, async () => {
     const body = await req.json().catch(() => ({}));
     const result = await executeJob(normalizePostBody(body), "manual");
-    return NextResponse.json({
-      ok: true,
-      actor: auth.actor,
-      devBypassAuth: isDevBypassAuthEnabled(),
+    return {
       ...result,
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 },
-    );
-  }
+    };
+  });
 }

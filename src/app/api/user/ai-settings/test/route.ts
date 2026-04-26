@@ -7,10 +7,20 @@ import { createUserSupabaseClient } from "@/lib/supabase/user";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type TestByokRequestBody = {
+  provider?: string;
+  model?: string;
+  apiKey?: string;
+};
+
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
   return m?.[1];
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function POST(req: Request) {
@@ -23,9 +33,9 @@ export async function POST(req: Request) {
   } = await userClient.auth.getUser();
   if (userErr || !user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { provider?: string; model?: string; apiKey?: string };
+  let body: TestByokRequestBody;
   try {
-    body = (await req.json()) as any;
+    body = (await req.json()) as TestByokRequestBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
@@ -38,7 +48,7 @@ export async function POST(req: Request) {
   if (!isByokProvider(provider)) {
     return NextResponse.json({ error: "Unsupported provider" }, { status: 400 });
   }
-  const modelAllowed = PROVIDER_CONFIG[provider].models.some((m) => m.value === model);
+  const modelAllowed = PROVIDER_CONFIG[provider].models.some((item) => item.value === model);
   if (!modelAllowed) {
     return NextResponse.json({ error: "Model not allowed for provider" }, { status: 400 });
   }
@@ -58,7 +68,10 @@ export async function POST(req: Request) {
       inputTokens: result.inputTokens ?? null,
       outputTokens: result.outputTokens ?? null,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Connection test failed" }, { status: 400 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: getErrorMessage(error) || "Connection test failed" },
+      { status: 400 },
+    );
   }
 }

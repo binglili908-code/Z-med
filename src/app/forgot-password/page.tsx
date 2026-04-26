@@ -89,7 +89,7 @@ function ForgotPasswordContent() {
 
           {!supabase ? (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-              缺少 NEXT_PUBLIC_SUPABASE_URL 或 NEXT_PUBLIC_SUPABASE_ANON_KEY，当前无法发送重置邮件。
+              缺少 NEXT_PUBLIC_SUPABASE_URL 或 Supabase publishable key，当前无法发送重置邮件。
             </div>
           ) : null}
 

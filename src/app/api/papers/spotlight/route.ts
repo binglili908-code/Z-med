@@ -8,6 +8,7 @@ import {
 import { buildSpotlightPapers } from "@/lib/spotlight";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
+import { findProfileIdByContactEmail } from "@/server/repositories/profiles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,13 +24,7 @@ async function resolveBypassUserId(service: ReturnType<typeof createServiceSupab
   if (direct) return direct;
   const seedEmail = getDevBypassSeedEmail();
   if (!seedEmail) return null;
-  const { data } = await service
-    .from("profiles")
-    .select("id")
-    .eq("contact_email", seedEmail)
-    .limit(1)
-    .maybeSingle();
-  return data?.id ?? null;
+  return findProfileIdByContactEmail(service, seedEmail);
 }
 
 export async function GET(req: Request) {

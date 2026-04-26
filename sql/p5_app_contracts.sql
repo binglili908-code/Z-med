@@ -1,0 +1,13 @@
+-- Superseded contract draft.
+--
+-- This file was an early guardrail draft created before the remote Supabase schema
+-- was exported. Do not run it against any environment.
+--
+-- Use this read-only export as the source artifact instead:
+--   sql/exports/20260425T093644Z_remote_public_schema.sql
+--
+-- Use this handoff document for the DBA/Claude migration workflow:
+--   docs/sql-change-proposals/20260425T093644Z_supabase_schema_rpc_handoff.md
+--
+-- Reason: the remote export has the exact production contract, including RPC
+-- function bodies and subtle table differences that this draft did not know yet.

@@ -1,4 +1,5 @@
 import { PROVIDER_CONFIG, type ByokProvider } from "@/lib/byok-config";
+import { fetchWithTimeout } from "@/lib/external-fetch";
 
 export interface LLMRequest {
   provider: ByokProvider;
@@ -20,7 +21,7 @@ export async function callLLM(req: LLMRequest): Promise<LLMResponse> {
 
   if (["openai", "deepseek", "moonshot", "qwen", "zhipu"].includes(req.provider)) {
     const url = PROVIDER_CONFIG[req.provider].baseUrl;
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -35,6 +36,8 @@ export async function callLLM(req: LLMRequest): Promise<LLMResponse> {
         ],
       }),
       cache: "no-store",
+      label: `${req.provider} LLM request`,
+      timeoutMs: 60000,
     });
     const json = (await res.json()) as {
       error?: { message?: string } | string;
@@ -59,7 +62,7 @@ export async function callLLM(req: LLMRequest): Promise<LLMResponse> {
 
   if (req.provider === "anthropic") {
     const url = PROVIDER_CONFIG.anthropic.baseUrl;
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -74,6 +77,8 @@ export async function callLLM(req: LLMRequest): Promise<LLMResponse> {
         messages: [{ role: "user", content: req.userPrompt }],
       }),
       cache: "no-store",
+      label: "anthropic LLM request",
+      timeoutMs: 60000,
     });
     const json = (await res.json()) as {
       error?: { message?: string } | string;
@@ -102,7 +107,7 @@ export async function callLLM(req: LLMRequest): Promise<LLMResponse> {
   if (req.provider === "gemini") {
     const model = encodeURIComponent(req.model);
     const url = `${PROVIDER_CONFIG.gemini.baseUrl}/${model}:generateContent?key=${encodeURIComponent(req.apiKey)}`;
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -111,6 +116,8 @@ export async function callLLM(req: LLMRequest): Promise<LLMResponse> {
         generationConfig: { temperature },
       }),
       cache: "no-store",
+      label: "gemini LLM request",
+      timeoutMs: 60000,
     });
     const json = (await res.json()) as {
       error?: { message?: string };
