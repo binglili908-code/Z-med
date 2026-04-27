@@ -1,3 +1,4 @@
+import { cleanText, escapeHtml } from "@/lib/email-template-utils";
 import { sendResendEmail } from "@/lib/resend-email";
 import type { SpotlightPaper } from "@/lib/spotlight";
 
@@ -22,20 +23,6 @@ function getBaseUrl() {
     process.env.NEXT_PUBLIC_SITE_URL?.trim() ||
     "https://zlab-med.com";
   return baseUrl.replace(/\/+$/, "");
-}
-
-function escapeHtml(value: string | null | undefined) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function cleanText(value: string | null | undefined) {
-  const text = value?.trim();
-  return text ? text : null;
 }
 
 function buildTitleHtml(item: SpotlightPaper) {

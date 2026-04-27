@@ -28,9 +28,15 @@ const SUBSCRIPTION_ALIASES: Record<string, string[]> = {
   llm: ["large language model", "large language models", "gpt"],
   mri: ["magnetic resonance imaging"],
   nlp: ["natural language processing"],
+  pdac: ["pancreatic ductal adenocarcinoma", "pancreatic cancer", "pancreatic neoplasms"],
   pet: ["positron emission tomography"],
   rct: ["randomized controlled trial", "randomised controlled trial"],
   sle: ["systemic lupus erythematosus"],
+  "\u80f0\u817a\u764c": [
+    "pancreatic cancer",
+    "pancreatic ductal adenocarcinoma",
+    "pancreatic neoplasms",
+  ],
 };
 
 export function normalizeMatchText(input: string) {

@@ -1,11 +1,17 @@
+import { startOfIsoWeek, toDateString } from "@/lib/iso-week";
 import { createResendEmailSender } from "@/lib/resend-email";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
-  buildSearchText,
-  expandSubscriptionTerms,
-  journalMatchesAnyTerm,
-  textMatchesAnyTerm,
-} from "@/lib/subscription-matching";
+  diversifyWeeklyPushCandidates,
+  selectPersonalizedWeeklyPushPool,
+  selectTopicFallbackWeeklyPushPool,
+  sortWeeklyPushCandidates,
+} from "@/lib/weekly-push-selection";
+import {
+  buildWeeklyPushDigestHtml,
+  getWeeklyPushEmailSubject,
+  type WeeklyPushDigestPaper,
+} from "@/lib/weekly-push-email";
 import {
   hasWeeklyPushDeliveryForIssue,
   insertWeeklyPushDeliveries,
@@ -15,182 +21,23 @@ import {
   markWeeklyPushIssueSent,
   replaceWeeklyPushIssueItems,
   upsertWeeklyPushIssueDraft,
-  type WeeklyPushCandidatePaper,
-  type WeeklyPushProfileRow,
 } from "@/server/repositories/weekly-push";
 
-function startOfIsoWeek(date: Date) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const day = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() - day + 1);
-  return d;
-}
+const DEFAULT_WEEKLY_PUSH_TARGET_COUNT = 7;
+const STRICT_WEEKLY_PUSH_REASON =
+  "\u4e0e\u60a8\u7684\u671f\u520a\u8ba2\u9605\u548c\u5173\u952e\u8bcd\u504f\u597d\u540c\u65f6\u5339\u914d";
+const TOPIC_FALLBACK_WEEKLY_PUSH_REASON =
+  "\u672c\u5468\u6682\u65e0\u66f4\u591a\u540c\u65f6\u5339\u914d\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\uff0c\u8fd9\u7bc7\u4e0e\u60a8\u7684\u7814\u7a76\u4e3b\u9898\u5f3a\u76f8\u5173";
 
-function toDateString(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
-function escapeHtml(value: string | null | undefined) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function cleanText(value: string | null | undefined) {
-  const text = value?.trim();
-  return text ? text : null;
-}
-
-function buildPaperTitleHtml(paper: WeeklyPushCandidatePaper, index: number) {
-  const titleZh = cleanText(paper.title_zh);
-  const titleEn = cleanText(paper.title);
-  if (titleZh && titleEn && titleZh !== titleEn) {
-    return `
-        <div><strong>${index + 1}. ${escapeHtml(titleZh)}</strong></div>
-        <div style="font-size:13px;color:#475569;">${escapeHtml(titleEn)}</div>
-    `;
-  }
-  return `<div><strong>${index + 1}. ${escapeHtml(titleEn ?? "")}</strong></div>`;
-}
-
-function buildPaperAbstractHtml(paper: WeeklyPushCandidatePaper) {
-  const abstractZh = cleanText(paper.abstract_zh);
-  const abstractEn = cleanText(paper.abstract);
-  if (abstractZh && abstractEn && abstractZh !== abstractEn) {
-    return `
-        <div style="font-size:12px;font-weight:700;color:#0f172a;margin-top:8px;">中文摘要</div>
-        <div style="font-size:13px;color:#334155;white-space:pre-wrap;">${escapeHtml(abstractZh)}</div>
-        <div style="font-size:12px;font-weight:700;color:#0f172a;margin-top:8px;">English Abstract</div>
-        <div style="font-size:13px;color:#475569;white-space:pre-wrap;">${escapeHtml(abstractEn)}</div>
-    `;
-  }
-  if (abstractZh) {
-    return `<div style="font-size:13px;color:#334155;white-space:pre-wrap;margin-top:8px;">${escapeHtml(abstractZh)}</div>`;
-  }
-  if (abstractEn) {
-    return `<div style="font-size:13px;color:#475569;white-space:pre-wrap;margin-top:8px;">${escapeHtml(abstractEn)}</div>`;
-  }
-  return "";
-}
-
-function buildDigestHtml(papers: WeeklyPushCandidatePaper[]) {
-  const list = papers
-    .map(
-      (paper, index) => `
-      <li style="margin-bottom:12px;">
-        ${buildPaperTitleHtml(paper, index)}
-        <div style="font-size:12px;color:#666;">${escapeHtml(paper.journal ?? "PubMed")} · ${escapeHtml(paper.publication_date ?? "N/A")} · score ${escapeHtml(String(paper.quality_score ?? 0))}</div>
-        <div><a href="${escapeHtml(paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/")}" target="_blank" rel="noreferrer">${escapeHtml(paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/")}</a></div>
-        ${buildPaperAbstractHtml(paper)}
-      </li>`,
-    )
-    .join("");
-  return `
-    <div style="font-family:Arial,sans-serif;line-height:1.6;">
-      <h2>本周 AI+医学精选文献</h2>
-      <ol>${list}</ol>
-    </div>
-  `;
-}
-
-function normalizeTitle(title: string) {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function matchJournal(paper: WeeklyPushCandidatePaper, journalTerms: string[]) {
-  if (!journalTerms.length) return true;
-  return journalMatchesAnyTerm(paper.journal, journalTerms);
-}
-
-function matchKeyword(paper: WeeklyPushCandidatePaper, keywords: string[]) {
-  if (!keywords.length) return true;
-  return textMatchesAnyTerm(buildSearchText([
-    paper.title ?? "",
-    paper.title_zh ?? "",
-    paper.abstract ?? "",
-    paper.abstract_zh ?? "",
-    paper.journal ?? "",
-    (paper.keywords ?? []).join(" "),
-    (paper.mesh_terms ?? []).join(" "),
-    paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
-  ]), keywords);
-}
-
-function sortCandidates(candidates: WeeklyPushCandidatePaper[]) {
-  return [...candidates].sort((a, b) => {
-    const scoreDiff = Number(b.quality_score ?? 0) - Number(a.quality_score ?? 0);
-    if (scoreDiff !== 0) return scoreDiff;
-    return String(b.publication_date ?? "").localeCompare(String(a.publication_date ?? ""));
-  });
-}
-
-function diversifyCandidates(candidates: WeeklyPushCandidatePaper[], maxCount: number) {
-  const selected: WeeklyPushCandidatePaper[] = [];
-  const usedTitle = new Set<string>();
-  const journalCount = new Map<string, number>();
-
-  for (const paper of candidates) {
-    const titleKey = normalizeTitle(paper.title);
-    if (usedTitle.has(titleKey)) continue;
-    const journalKey = (paper.journal ?? "general").trim().toLowerCase() || "general";
-    if ((journalCount.get(journalKey) ?? 0) >= 1) continue;
-    selected.push(paper);
-    usedTitle.add(titleKey);
-    journalCount.set(journalKey, (journalCount.get(journalKey) ?? 0) + 1);
-    if (selected.length >= maxCount) return selected;
-  }
-
-  for (const paper of candidates) {
-    const titleKey = normalizeTitle(paper.title);
-    if (usedTitle.has(titleKey)) continue;
-    const journalKey = (paper.journal ?? "general").trim().toLowerCase() || "general";
-    if ((journalCount.get(journalKey) ?? 0) >= 2) continue;
-    selected.push(paper);
-    usedTitle.add(titleKey);
-    journalCount.set(journalKey, (journalCount.get(journalKey) ?? 0) + 1);
-    if (selected.length >= maxCount) return selected;
-  }
-
-  return selected;
-}
-
-function selectPersonalizedPool(
-  candidates: WeeklyPushCandidatePaper[],
-  profile: WeeklyPushProfileRow,
-) {
-  const rawKeywords = profile.subscription_normalized_keywords?.length
-    ? profile.subscription_normalized_keywords
-    : profile.subscription_keywords;
-  const rawJournals = profile.subscription_normalized_journals?.length
-    ? profile.subscription_normalized_journals
-    : profile.custom_journals;
-  const keywords = expandSubscriptionTerms(rawKeywords);
-  const journals = expandSubscriptionTerms(rawJournals);
-  const hasKeywords = keywords.length > 0;
-  const hasJournals = journals.length > 0;
-
-  const filtered = candidates.filter((paper) => {
-    if (hasJournals && !matchJournal(paper, journals)) return false;
-    if (hasKeywords && !matchKeyword(paper, keywords)) return false;
-    return true;
-  });
-
-  if (!filtered.length && (hasKeywords || hasJournals)) {
-    return [];
-  }
-
-  return sortCandidates(filtered.length ? filtered : candidates);
+function getWeeklyPushTargetCount() {
+  const configured = Number(process.env.WEEKLY_PUSH_TARGET_COUNT ?? DEFAULT_WEEKLY_PUSH_TARGET_COUNT);
+  if (!Number.isFinite(configured)) return DEFAULT_WEEKLY_PUSH_TARGET_COUNT;
+  return Math.max(1, Math.min(20, Math.floor(configured)));
 }
 
 export async function runWeeklyPushJob() {
   const supabase = createServiceSupabaseClient();
+  const targetCount = getWeeklyPushTargetCount();
   const now = new Date();
   const currentWeekStart = startOfIsoWeek(now);
   const summaryStart = new Date(currentWeekStart);
@@ -205,18 +52,19 @@ export async function runWeeklyPushJob() {
     summaryEnd: summaryEndStr,
     limit: 200,
   });
-  const candidatePool = sortCandidates(
+  const candidatePool = sortWeeklyPushCandidates(
     candidatesAll.filter(
       (paper) =>
         (paper.quality_tier ?? "").toLowerCase() === "top" ||
         (paper.quality_score ?? 0) >= 0.72,
     ),
   );
-  const selected = diversifyCandidates(candidatePool, 5);
+  const selected = diversifyWeeklyPushCandidates(candidatePool, targetCount);
 
   const issueMeta = {
     fromDate: summaryStartStr,
     toDate: summaryEndStr,
+    targetCount,
     candidateCount: candidatePool.length,
     selectedCount: selected.length,
   };
@@ -237,6 +85,9 @@ export async function runWeeklyPushJob() {
   let sentCount = 0;
   let skippedRepeatedUsers = 0;
   let skippedNoMatchUsers = 0;
+  let skippedNoFreshPapersUsers = 0;
+  let failedEmailUsers = 0;
+  let fallbackPaperCount = 0;
   for (const profile of profiles) {
     const to = String(profile.contact_email || "").trim();
     if (!to) continue;
@@ -249,31 +100,62 @@ export async function runWeeklyPushJob() {
       continue;
     }
 
-    const personalizedCandidatesRaw = selectPersonalizedPool(candidatePool, profile);
-    if (!personalizedCandidatesRaw.length) {
+    const exactCandidatesRaw = selectPersonalizedWeeklyPushPool(candidatePool, profile);
+    const topicFallbackCandidatesRaw = selectTopicFallbackWeeklyPushPool(candidatePool, profile);
+    if (!exactCandidatesRaw.length && !topicFallbackCandidatesRaw.length) {
       skippedNoMatchUsers += 1;
       continue;
     }
 
-    const personalizedCandidateIds = personalizedCandidatesRaw.map((paper) => paper.id);
+    const personalizedCandidateIds = Array.from(
+      new Set([
+        ...exactCandidatesRaw.map((paper) => paper.id),
+        ...topicFallbackCandidatesRaw.map((paper) => paper.id),
+      ]),
+    );
     const deliveredSet = await listDeliveredWeeklyPushPaperIds(supabase, {
       userId: profile.id,
       paperIds: personalizedCandidateIds,
     });
-    const personalizedCandidates = personalizedCandidatesRaw.filter(
+    const exactCandidates = exactCandidatesRaw.filter(
       (paper) => !deliveredSet.has(paper.id),
     );
+    const exactSelected = diversifyWeeklyPushCandidates(exactCandidates, targetCount);
+    const selectedExactIds = new Set(exactSelected.map((paper) => paper.id));
 
-    const personalized = diversifyCandidates(personalizedCandidates, 5);
-    if (!personalized.length) continue;
-    const html = buildDigestHtml(personalized);
+    const topicFallbackCandidates = topicFallbackCandidatesRaw.filter(
+      (paper) => !deliveredSet.has(paper.id) && !selectedExactIds.has(paper.id),
+    );
+    const topicFallbackSelected =
+      exactSelected.length < targetCount
+        ? diversifyWeeklyPushCandidates(topicFallbackCandidates, targetCount - exactSelected.length)
+        : [];
+    const personalized: WeeklyPushDigestPaper[] = [
+      ...exactSelected.map((paper) => ({
+        ...paper,
+        source_type: "precision" as const,
+        recommendation_reason: STRICT_WEEKLY_PUSH_REASON,
+      })),
+      ...topicFallbackSelected.map((paper) => ({
+        ...paper,
+        source_type: "serendipity" as const,
+        recommendation_reason: TOPIC_FALLBACK_WEEKLY_PUSH_REASON,
+      })),
+    ];
+    if (!personalized.length) {
+      skippedNoFreshPapersUsers += 1;
+      continue;
+    }
+    fallbackPaperCount += topicFallbackSelected.length;
+    const html = buildWeeklyPushDigestHtml(personalized);
     try {
       await sendEmail({
         to,
-        subject: `每周 AI+医学精选（${summaryStartStr} ~ ${summaryEndStr}）`,
+        subject: getWeeklyPushEmailSubject(summaryStartStr, summaryEndStr),
         html,
       });
     } catch {
+      failedEmailUsers += 1;
       continue;
     }
 
@@ -290,7 +172,15 @@ export async function runWeeklyPushJob() {
 
   await markWeeklyPushIssueSent(supabase, {
     issueId,
-    meta: { ...issueMeta, sentCount, skippedRepeatedUsers, skippedNoMatchUsers },
+    meta: {
+      ...issueMeta,
+      sentCount,
+      skippedRepeatedUsers,
+      skippedNoMatchUsers,
+      skippedNoFreshPapersUsers,
+      failedEmailUsers,
+      fallbackPaperCount,
+    },
   });
 
   return {
@@ -301,5 +191,8 @@ export async function runWeeklyPushJob() {
     sentCount,
     skippedRepeatedUsers,
     skippedNoMatchUsers,
+    skippedNoFreshPapersUsers,
+    failedEmailUsers,
+    fallbackPaperCount,
   };
 }

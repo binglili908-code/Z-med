@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
 import {
+  getPersonalizedFeedInApp,
+  getPersonalizedFeedMode,
+  logPersonalizedFeedComparison,
+} from "@/lib/personalized-feed";
+import {
   getDevBypassSeedEmail,
   getDevBypassUserId,
   isDevBypassAuthEnabled,
@@ -58,6 +63,59 @@ async function resolveBypassUserId(service: ReturnType<typeof createServiceSupab
   return findProfileIdByContactEmail(service, seedEmail);
 }
 
+async function loadPersonalizedFeed(args: {
+  service: ReturnType<typeof createServiceSupabaseClient>;
+  userId: string;
+  page: number;
+  pageSize: number;
+  subscriptionStatus: ProfileSubscriptionStatus;
+}) {
+  const mode = getPersonalizedFeedMode();
+  const rpcFeedPromise = () =>
+    getPersonalizedFeed(args.service, {
+      userId: args.userId,
+      page: args.page,
+      pageSize: args.pageSize,
+    });
+
+  if (mode === "app") {
+    try {
+      return await getPersonalizedFeedInApp({
+        userId: args.userId,
+        page: args.page,
+        pageSize: args.pageSize,
+        subscriptionStatus: args.subscriptionStatus,
+      });
+    } catch (error) {
+      console.error("[personalized-feed-app-fallback]", error);
+      return rpcFeedPromise();
+    }
+  }
+
+  const rpcFeed = await rpcFeedPromise();
+  if (mode === "compare") {
+    try {
+      const appFeed = await getPersonalizedFeedInApp({
+        userId: args.userId,
+        page: args.page,
+        pageSize: args.pageSize,
+        subscriptionStatus: args.subscriptionStatus,
+      });
+      logPersonalizedFeedComparison({
+        userId: args.userId,
+        matchingKeywords: args.subscriptionStatus.matchingKeywords,
+        matchingJournals: args.subscriptionStatus.matchingJournals,
+        rpc: rpcFeed,
+        app: appFeed,
+      });
+    } catch (error) {
+      console.error("[personalized-feed-compare-failed]", error);
+    }
+  }
+
+  return rpcFeed;
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const page = clamp(Number(searchParams.get("page") ?? 1) || 1, 1, 1000);
@@ -87,7 +145,13 @@ export async function GET(req: Request) {
       : emptySubscriptionStatus;
 
     if (userId && subscriptionStatus.hasSubscriptionConfig) {
-      const feed = await getPersonalizedFeed(service, { userId, page, pageSize });
+      const feed = await loadPersonalizedFeed({
+        service,
+        userId,
+        page,
+        pageSize,
+        subscriptionStatus,
+      });
       const interactions = await getPaperEmailInteractions(
         service,
         userId,
@@ -102,6 +166,10 @@ export async function GET(req: Request) {
         personalized: true,
         hasSubscription: true,
         requiresLogin: false,
+        exactMatchTotal: feed.exactMatchTotal,
+        strictMatchFallback: feed.strictMatchFallback,
+        strictMatchMessage: feed.strictMatchMessage,
+        fallbackType: feed.fallbackType,
         devBypassAuth,
         devBypassUserId: devBypassAuth ? userId : null,
         devBypassSeedEmail: devBypassAuth ? getDevBypassSeedEmail() : null,

@@ -1,10 +1,14 @@
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { isMissingColumnError } from "@/server/repositories/schema-compat";
 
 type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "from" | "rpc">;
 
 export type ProfileKeywordRow = {
   subscription_keywords: string[] | null;
   subscription_mesh_terms: string[] | null;
+  custom_journals?: string[] | null;
+  subscription_normalized_keywords?: string[] | null;
+  subscription_normalized_journals?: string[] | null;
 };
 
 export type JournalQualityRow = {
@@ -70,6 +74,14 @@ export type JournalSyncLogRow = {
   finished_at: string;
   created_at: string;
 };
+
+const ACTIVE_PROFILE_KEYWORDS_SELECT =
+  "subscription_keywords,subscription_mesh_terms,custom_journals,subscription_normalized_keywords,subscription_normalized_journals";
+const ACTIVE_PROFILE_KEYWORDS_LEGACY_SELECT =
+  "subscription_keywords,subscription_mesh_terms,custom_journals";
+const PROFILE_SUBSCRIPTION_KEYWORDS_SELECT =
+  "subscription_keywords,subscription_normalized_keywords";
+const PROFILE_SUBSCRIPTION_KEYWORDS_LEGACY_SELECT = "subscription_keywords";
 
 function normalizeToken(input: string) {
   return input.trim().toLowerCase();
@@ -161,25 +173,49 @@ export function resolveJournalQuality(
 }
 
 export async function loadActiveProfileKeywordRows(client: SupabaseDbClient) {
-  const { data, error } = await client
+  const normalizedQuery = await client
     .from("profiles")
-    .select("subscription_keywords, subscription_mesh_terms")
+    .select(ACTIVE_PROFILE_KEYWORDS_SELECT)
     .eq("is_active", true);
-  if (error) {
-    throw new Error(`Failed to read profiles: ${error.message}`);
+
+  if (normalizedQuery.error && isMissingColumnError(normalizedQuery.error)) {
+    const legacyQuery = await client
+      .from("profiles")
+      .select(ACTIVE_PROFILE_KEYWORDS_LEGACY_SELECT)
+      .eq("is_active", true);
+    if (legacyQuery.error) {
+      throw new Error(`Failed to read profiles: ${legacyQuery.error.message}`);
+    }
+    return (legacyQuery.data ?? []) as ProfileKeywordRow[];
   }
-  return (data ?? []) as ProfileKeywordRow[];
+
+  if (normalizedQuery.error) {
+    throw new Error(`Failed to read profiles: ${normalizedQuery.error.message}`);
+  }
+  return (normalizedQuery.data ?? []) as ProfileKeywordRow[];
 }
 
 export async function loadProfileSubscriptionKeywordRows(client: SupabaseDbClient) {
-  const { data, error } = await client
+  const normalizedQuery = await client
     .from("profiles")
-    .select("subscription_keywords")
+    .select(PROFILE_SUBSCRIPTION_KEYWORDS_SELECT)
     .not("subscription_keywords", "is", null);
-  if (error) {
-    throw new Error(`Failed to load profile keywords: ${error.message}`);
+
+  if (normalizedQuery.error && isMissingColumnError(normalizedQuery.error)) {
+    const legacyQuery = await client
+      .from("profiles")
+      .select(PROFILE_SUBSCRIPTION_KEYWORDS_LEGACY_SELECT)
+      .not("subscription_keywords", "is", null);
+    if (legacyQuery.error) {
+      throw new Error(`Failed to load profile keywords: ${legacyQuery.error.message}`);
+    }
+    return (legacyQuery.data ?? []) as ProfileKeywordRow[];
   }
-  return (data ?? []) as Array<{ subscription_keywords?: string[] | null }>;
+
+  if (normalizedQuery.error) {
+    throw new Error(`Failed to load profile keywords: ${normalizedQuery.error.message}`);
+  }
+  return (normalizedQuery.data ?? []) as ProfileKeywordRow[];
 }
 
 export async function loadResearchTopicRefs(client: SupabaseDbClient) {

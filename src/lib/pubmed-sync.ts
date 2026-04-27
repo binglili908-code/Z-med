@@ -6,23 +6,26 @@ import {
   extractPubmedQueryText,
 } from "@/lib/pubmed-keyword-expansion";
 import { KeywordSyncStats } from "@/lib/pubmed-keyword-sync-stats";
+import { loadPubmedSummariesByIds } from "@/lib/pubmed-summary-loader";
 import {
-  chunk,
   dedupeIdList,
-  enrichSummariesWithAbstracts,
   pubmedEsearch,
   pubmedEsearchAll,
-  pubmedEsummary,
   randomDelay,
   resolveOpenAccessByDoi,
-  type PubmedSummary,
 } from "@/lib/pubmed-sync-client";
 import {
-  AI_TERMS,
-  MED_TERMS,
-  dedupeTerms,
-  normalizeToken,
-} from "@/lib/pubmed-sync-rules";
+  buildUserPreferenceJournalQueries,
+  buildJournalWindowQuery,
+  buildQueryFromKeywords,
+  buildRecentJournalQuery,
+  buildTopJournalBackfillQuery,
+  buildTopJournalQuery,
+  formatPubmedDate,
+  monthRangeByOffset,
+  toJournalList,
+  toKeywordList,
+} from "@/lib/pubmed-sync-queries";
 import {
   buildPubmedQueryForKeyword,
   calculateAiMedScore,
@@ -42,92 +45,7 @@ import {
   writeBackfillMonthOffset,
   writeSyncStateValue,
   type JournalTierWeightResult,
-  type ProfileKeywordRow,
 } from "@/server/repositories/pubmed-sync";
-
-function toKeywordList(rows: ProfileKeywordRow[]) {
-  const set = new Set<string>();
-  for (const row of rows) {
-    for (const k of row.subscription_keywords ?? []) {
-      const v = normalizeToken(k);
-      if (v) set.add(v);
-    }
-    for (const m of row.subscription_mesh_terms ?? []) {
-      const v = normalizeToken(m);
-      if (v) set.add(v);
-    }
-  }
-  return Array.from(set);
-}
-
-function buildQueryFromKeywords(keywords: string[]) {
-  const aiTerms = dedupeTerms(AI_TERMS);
-  const medTerms = dedupeTerms([...MED_TERMS, ...keywords]).slice(0, 25);
-  const aiJoined = aiTerms
-    .map((k) => `"${k.replace(/"/g, "")}"[Title/Abstract]`)
-    .join(" OR ");
-  const medJoined = medTerms
-    .map((k) => `"${k.replace(/"/g, "")}"[Title/Abstract]`)
-    .join(" OR ");
-  return `((${aiJoined}) AND (${medJoined})) AND ("last 7 days"[EDat])`;
-}
-
-function buildTopJournalQuery(journalTerms: string[]) {
-  const topJournalTerms = dedupeTerms(journalTerms).slice(0, 40);
-  if (!topJournalTerms.length) return null;
-  const journalJoined = topJournalTerms
-    .map((j) => `"${j.replace(/"/g, "")}"[jour]`)
-    .join(" OR ");
-  const aiJoined = dedupeTerms(AI_TERMS)
-    .map((k) => `"${k.replace(/"/g, "")}"[Title/Abstract]`)
-    .join(" OR ");
-  return `((${journalJoined}) AND (${aiJoined})) AND ("last 30 days"[EDat])`;
-}
-
-function buildTopJournalBackfillQuery(journalTerms: string[], fromDate: string, toDate: string) {
-  const topJournalTerms = dedupeTerms(journalTerms).slice(0, 40);
-  if (!topJournalTerms.length) return null;
-  const journalJoined = topJournalTerms
-    .map((j) => `"${j.replace(/"/g, "")}"[jour]`)
-    .join(" OR ");
-  const aiJoined = dedupeTerms(AI_TERMS)
-    .map((k) => `"${k.replace(/"/g, "")}"[Title/Abstract]`)
-    .join(" OR ");
-  return `((${journalJoined}) AND (${aiJoined})) AND ("${fromDate}"[Date - Publication] : "${toDate}"[Date - Publication])`;
-}
-
-function buildRecentJournalQuery(journalName: string) {
-  const j = journalName.replace(/"/g, "").trim();
-  if (!j) return null;
-  return `"${j}"[Journal] AND ("last 30 days"[EDat])`;
-}
-
-function formatPubmedDate(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}/${m}/${d}`;
-}
-
-function buildJournalWindowQuery(journalName: string, fromDate: string, toDate: string) {
-  const j = journalName.replace(/"/g, "").trim();
-  if (!j) return null;
-  return `"${j}"[Journal] AND (${fromDate}:${toDate}[dp])`;
-}
-
-function monthRangeByOffset(monthOffset: number) {
-  const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  start.setUTCMonth(start.getUTCMonth() - monthOffset);
-  const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
-  const fmt = (d: Date) => {
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    return `${y}/${m}/${day}`;
-  };
-  return { fromDate: fmt(start), toDate: fmt(end) };
-}
 
 export async function runPubmedSyncJob() {
   const supabase = createServiceSupabaseClient();
@@ -136,10 +54,18 @@ export async function runPubmedSyncJob() {
   const activeJournalNames = await loadActiveJournalNames(supabase);
   const profileRows = await loadActiveProfileKeywordRows(supabase);
   const keywords = toKeywordList(profileRows);
+  const profileJournalTerms = toJournalList(profileRows);
   const broadQuery = buildQueryFromKeywords(keywords);
   const broadIds = await pubmedEsearch(broadQuery, 200);
   const topJournalQuery = buildTopJournalQuery(topJournalTerms);
   const topJournalIds = topJournalQuery ? await pubmedEsearch(topJournalQuery, 300) : [];
+  const profileJournalIds: string[] = [];
+  const profileJournalQueries = buildUserPreferenceJournalQueries(profileJournalTerms, 30);
+  for (const query of profileJournalQueries) {
+    const ids = await pubmedEsearch(query, 120);
+    profileJournalIds.push(...ids);
+    await randomDelay(120, 220);
+  }
   const byJournalIds: string[] = [];
   for (const name of activeJournalNames) {
     const q = buildRecentJournalQuery(name);
@@ -148,16 +74,9 @@ export async function runPubmedSyncJob() {
     byJournalIds.push(...ids);
     await randomDelay(120, 220);
   }
-  const ids = dedupeIdList([...topJournalIds, ...broadIds, ...byJournalIds]);
+  const ids = dedupeIdList([...topJournalIds, ...broadIds, ...profileJournalIds, ...byJournalIds]);
 
-  const summaryChunks = chunk(ids, 20);
-  const summaries: PubmedSummary[] = [];
-  for (const group of summaryChunks) {
-    const part = await pubmedEsummary(group);
-    summaries.push(...part);
-    await randomDelay(180, 320);
-  }
-  await enrichSummariesWithAbstracts(summaries);
+  const summaries = await loadPubmedSummariesByIds(ids);
 
   const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
     supabase,
@@ -167,8 +86,10 @@ export async function runPubmedSyncJob() {
 
   return {
     keywordCount: keywords.length,
+    profileJournalTermCount: profileJournalTerms.length,
     topJournalTermCount: topJournalTerms.length,
     topJournalFetchedCount: topJournalIds.length,
+    profileJournalFetchedCount: profileJournalIds.length,
     activeJournalCount: activeJournalNames.length,
     byJournalFetchedCount: byJournalIds.length,
     fetchedCount: summaries.length,
@@ -176,6 +97,7 @@ export async function runPubmedSyncJob() {
     upsertedCount: upsertRows.length,
     query: broadQuery,
     topJournalQuery,
+    profileJournalQueries,
   };
 }
 
@@ -200,14 +122,7 @@ export async function runPubmedBackfillJob() {
   }
 
   const ids = await pubmedEsearch(query, 200);
-  const summaryChunks = chunk(ids, 20);
-  const summaries: PubmedSummary[] = [];
-  for (const group of summaryChunks) {
-    const part = await pubmedEsummary(group);
-    summaries.push(...part);
-    await randomDelay(180, 320);
-  }
-  await enrichSummariesWithAbstracts(summaries);
+  const summaries = await loadPubmedSummariesByIds(ids);
 
   const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
     supabase,
@@ -262,14 +177,10 @@ export async function runJournalSyncJob() {
         const existingSet = await loadExistingPaperPmids(supabase, pmids);
         const newPmids = pmids.filter((id) => !existingSet.has(id));
         if (newPmids.length) {
-          const chunks = chunk(newPmids, 20);
-          const summaries: PubmedSummary[] = [];
-          for (const g of chunks) {
-            const part = await pubmedEsummary(g);
-            summaries.push(...part);
-            await randomDelay(160, 260);
-          }
-          await enrichSummariesWithAbstracts(summaries);
+          const summaries = await loadPubmedSummariesByIds(newPmids, {
+            delayMinMs: 160,
+            delayMaxMs: 260,
+          });
           const { upsertRows, aiMedCount } = await scoreAndUpsertPapers({
             supabase,
             summaries,
@@ -324,11 +235,9 @@ export async function runKeywordSyncJob() {
   const profiles = await loadProfileSubscriptionKeywordRows(supabase);
 
   const allKeywords = new Set<string>();
-  for (const row of profiles) {
-    for (const kw of row.subscription_keywords ?? []) {
-      const v = kw.trim();
-      if (v) allKeywords.add(v);
-    }
+  for (const keyword of toKeywordList(profiles)) {
+    const v = keyword.trim();
+    if (v) allKeywords.add(v);
   }
 
   const keywordList = Array.from(allKeywords);
@@ -460,14 +369,7 @@ export async function runKeywordSyncJob() {
     };
   }
 
-  const summaryChunks = chunk(newPmids, 20);
-  const summaries: PubmedSummary[] = [];
-  for (const group of summaryChunks) {
-    const part = await pubmedEsummary(group);
-    summaries.push(...part);
-    await randomDelay(180, 320);
-  }
-  await enrichSummariesWithAbstracts(summaries);
+  const summaries = await loadPubmedSummariesByIds(newPmids);
   for (const paper of summaries) {
     const { data: scoreData, error: scoreErr } = await calculateAiMedScore(supabase, {
       title: paper.title,

@@ -40,11 +40,15 @@ export type WeeklyPushDeliveryInsert = {
 export type WeeklyPushIssueMeta = {
   fromDate: string;
   toDate: string;
+  targetCount?: number;
   candidateCount: number;
   selectedCount: number;
   sentCount?: number;
   skippedRepeatedUsers?: number;
   skippedNoMatchUsers?: number;
+  skippedNoFreshPapersUsers?: number;
+  failedEmailUsers?: number;
+  fallbackPaperCount?: number;
 };
 
 const WEEKLY_CANDIDATE_SELECT =

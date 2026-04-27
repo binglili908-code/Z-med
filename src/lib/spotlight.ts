@@ -18,18 +18,31 @@ export type SpotlightSourceType = RecommendationSourceType;
 
 export type SpotlightPaper = PaperCard;
 
+const STRICT_MATCH_REASON =
+  "\u4e0e\u60a8\u7684\u671f\u520a\u8ba2\u9605\u548c\u5173\u952e\u8bcd\u504f\u597d\u540c\u65f6\u5339\u914d";
+const TRENDING_REASON = "\u5168\u5c40\u9ad8\u8d28\u91cf\u70ed\u70b9\u6587\u732e";
+const SERENDIPITY_REASON =
+  "\u4e0e\u60a8\u7684\u4e3b\u65b9\u5411\u4ea4\u53c9\uff0c\u53ef\u62d3\u5bbd\u7814\u7a76\u8fb9\u754c";
+const TOPIC_FALLBACK_REASON =
+  "\u672c\u5468\u6682\u65e0\u540c\u65f6\u5339\u914d\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\uff1b\u4ee5\u4e0b\u4e3a\u7814\u7a76\u65b9\u5411\u5f3a\u76f8\u5173\u6587\u732e";
+const TOPIC_FALLBACK_MESSAGE =
+  "\u672c\u5468\u6682\u672a\u627e\u5230\u540c\u65f6\u5339\u914d\u8ba2\u9605\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002\u4ee5\u4e0b\u662f\u4e0e\u60a8\u7684\u7814\u7a76\u65b9\u5411\u5f3a\u76f8\u5173\u7684\u9ad8\u8d28\u91cf\u6587\u732e\u3002";
+
 function includesAnyKeyword(paper: DbPaper, keywords: string[]) {
   if (!keywords.length) return true;
-  return textMatchesAnyTerm(buildSearchText([
-    paper.title ?? "",
-    paper.title_zh ?? "",
-    paper.abstract ?? "",
-    paper.abstract_zh ?? "",
-    paper.journal ?? "",
-    (paper.keywords ?? []).join(" "),
-    (paper.mesh_terms ?? []).join(" "),
-    paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
-  ]), keywords);
+  return textMatchesAnyTerm(
+    buildSearchText([
+      paper.title ?? "",
+      paper.title_zh ?? "",
+      paper.abstract ?? "",
+      paper.abstract_zh ?? "",
+      paper.journal ?? "",
+      (paper.keywords ?? []).join(" "),
+      (paper.mesh_terms ?? []).join(" "),
+      paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
+    ]),
+    keywords,
+  );
 }
 
 export async function buildSpotlightPapers(params: {
@@ -55,9 +68,8 @@ export async function buildSpotlightPapers(params: {
   const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
-  let papers: DbPaper[] = [];
 
-  papers = await listRecentQualityPapers(service, {
+  let papers = await listRecentQualityPapers(service, {
     cutoffDate,
     limit: 240,
   });
@@ -79,6 +91,17 @@ export async function buildSpotlightPapers(params: {
     return { paper, journalMatch, keywordMatch, relevanceScore };
   });
 
+  const requiresJournalMatch = journalTerms.length > 0;
+  const requiresKeywordMatch = keywords.length > 0;
+  let strictMatchFallback = false;
+  let strictMatchMessage: string | null = null;
+  const matchesRequiredPreferenceGroups = (item: (typeof scored)[number]) => {
+    return (
+      (!requiresJournalMatch || item.journalMatch) &&
+      (!requiresKeywordMatch || item.keywordMatch)
+    );
+  };
+
   const used = new Set<string>();
   const choose = (candidates: typeof scored, count: number) => {
     const picked: typeof scored = [];
@@ -94,43 +117,56 @@ export async function buildSpotlightPapers(params: {
   let relevantPool = scored;
   if (hasProfileConfig) {
     relevantPool = scored
-      .filter((item) => item.relevanceScore > Number(item.paper.quality_score ?? 0) / 100)
+      .filter(matchesRequiredPreferenceGroups)
       .sort((a, b) => b.relevanceScore - a.relevanceScore);
+    if (!relevantPool.length && requiresJournalMatch && requiresKeywordMatch) {
+      const topicFallbackPool = scored
+        .filter((item) => item.keywordMatch)
+        .sort((a, b) => b.relevanceScore - a.relevanceScore);
+      if (topicFallbackPool.length) {
+        relevantPool = topicFallbackPool;
+        strictMatchFallback = true;
+        strictMatchMessage = TOPIC_FALLBACK_MESSAGE;
+      }
+    }
   }
   const relevant = choose(relevantPool, 5);
 
-  const remaining = scored
+  let remaining = scored
     .filter((item) => !used.has(item.paper.id))
     .sort((a, b) => Number(b.paper.quality_score ?? 0) - Number(a.paper.quality_score ?? 0));
-  const trending = choose(remaining, 1);
+  const trending = hasProfileConfig ? [] : choose(remaining, 1);
 
+  remaining = scored
+    .filter((item) => !used.has(item.paper.id))
+    .sort((a, b) => Number(b.paper.quality_score ?? 0) - Number(a.paper.quality_score ?? 0));
   const serendipityPool = scored
     .filter((item) => !used.has(item.paper.id))
     .sort((a, b) => {
       if (a.relevanceScore !== b.relevanceScore) return a.relevanceScore - b.relevanceScore;
       return Number(b.paper.quality_score ?? 0) - Number(a.paper.quality_score ?? 0);
     });
-  const serendipity = choose(serendipityPool, 1);
+  const serendipity = hasProfileConfig ? [] : choose(serendipityPool, 1);
 
   const spotlight = [
     ...relevant.map((item) => ({
       paper: item.paper,
-      source_type: "precision" as const,
-      reason: "与您的期刊订阅与关键词偏好高度相关",
+      source_type: strictMatchFallback ? ("serendipity" as const) : ("precision" as const),
+      reason: strictMatchFallback ? TOPIC_FALLBACK_REASON : STRICT_MATCH_REASON,
     })),
     ...trending.map((item) => ({
       paper: item.paper,
       source_type: "trending" as const,
-      reason: "全局高质量热点文献",
+      reason: TRENDING_REASON,
     })),
     ...serendipity.map((item) => ({
       paper: item.paper,
       source_type: "serendipity" as const,
-      reason: "与您的主方向交叉，可拓宽研究边界",
+      reason: SERENDIPITY_REASON,
     })),
   ];
 
-  if (spotlight.length < 7) {
+  if (!hasProfileConfig && spotlight.length < 7) {
     for (const item of remaining) {
       if (spotlight.length >= 7) break;
       if (used.has(item.paper.id)) continue;
@@ -138,7 +174,7 @@ export async function buildSpotlightPapers(params: {
       spotlight.push({
         paper: item.paper,
         source_type: "precision" as const,
-        reason: hasProfileConfig ? "与您的订阅偏好相关" : "近30天高分文献",
+        reason: "\u8fd1 30 \u5929\u9ad8\u5206\u6587\u732e",
       });
     }
   }
@@ -157,5 +193,5 @@ export async function buildSpotlightPapers(params: {
     }),
   );
 
-  return { items, hasProfileConfig };
+  return { items, hasProfileConfig, strictMatchFallback, strictMatchMessage };
 }

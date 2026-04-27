@@ -75,6 +75,10 @@ export type PersonalizedFeedResult = {
   total: number;
   page: number;
   pageSize: number;
+  exactMatchTotal?: number;
+  strictMatchFallback?: boolean;
+  strictMatchMessage?: string | null;
+  fallbackType?: "topic" | null;
 };
 
 function normalizeQualityTier(input: string | null | undefined): PaperQualityTier {
@@ -208,6 +212,27 @@ export async function listFallbackFeedPapers(
   };
 }
 
+export async function listPersonalizedFeedCandidatePapers(
+  client: SupabaseDbClient,
+  params: { cutoffDate: string; limit: number },
+) {
+  const { data, error } = await client
+    .from("papers")
+    .select(FEED_PAPER_SELECT)
+    .eq("is_ai_med", true)
+    .in("quality_tier", ["top", "core"])
+    .gte("publication_date", params.cutoffDate)
+    .order("quality_score", { ascending: false })
+    .order("ai_med_score", { ascending: false })
+    .order("publication_date", { ascending: false })
+    .limit(params.limit);
+  if (error) {
+    throw new Error(`Failed to load personalized feed candidates: ${error.message}`);
+  }
+
+  return (data ?? []) as DbPaper[];
+}
+
 export async function listRecentQualityPapers(
   client: SupabaseDbClient,
   params: { cutoffDate: string; limit: number },
@@ -250,9 +275,7 @@ export async function getPaperEmailInteractions(
   return interactions;
 }
 
-function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
-  if (!terms.length) return true;
-  const expandedTerms = expandSubscriptionTerms(terms);
+function paperMatchesOneTermGroup(paper: SearchPaperRow, terms: string[]) {
   const haystack = buildSearchText([
     paper.title ?? "",
     paper.title_zh ?? "",
@@ -263,9 +286,17 @@ function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
     ...(paper.mesh_terms ?? []),
   ]);
   return (
-    textMatchesAnyTerm(haystack, expandedTerms) ||
-    journalMatchesAnyTerm(paper.journal, expandedTerms)
+    textMatchesAnyTerm(haystack, terms) ||
+    journalMatchesAnyTerm(paper.journal, terms)
   );
+}
+
+export function paperMatchesSearchTerms(paper: SearchPaperRow, terms: string[]) {
+  if (!terms.length) return true;
+  return terms.every((term) => {
+    const expandedTerms = expandSubscriptionTerms([term]);
+    return paperMatchesOneTermGroup(paper, expandedTerms);
+  });
 }
 
 export async function searchPapers(
@@ -318,7 +349,7 @@ export async function searchPapers(
 
   let rows = (data ?? []) as SearchPaperRow[];
   if (params.terms.length) {
-    rows = rows.filter((paper) => paperMatchesTerms(paper, params.terms));
+    rows = rows.filter((paper) => paperMatchesSearchTerms(paper, params.terms));
   }
 
   return {

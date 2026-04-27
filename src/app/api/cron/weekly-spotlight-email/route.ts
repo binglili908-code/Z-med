@@ -1,5 +1,9 @@
 import { runWeeklySpotlightEmailJob } from "@/lib/weekly-spotlight-email";
-import { runCronRoute } from "@/server/cron/run-cron-route";
+import {
+  parseCronBooleanParam,
+  parseOptionalCronIntegerParam,
+} from "@/server/cron/parse-cron-params";
+import { CronRouteError, runCronRoute } from "@/server/cron/run-cron-route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,29 +17,15 @@ type ManualJobOptions = {
   retryFailed?: boolean;
 };
 
-function toBoolean(value: string | null) {
-  if (!value) return false;
-  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-
-function toOptionalNumber(value: string | null) {
-  if (!value) return undefined;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid number: ${value}`);
-  }
-  return parsed;
-}
-
 function parseGetOptions(req: Request): ManualJobOptions {
   const { searchParams } = new URL(req.url);
   return {
     userId: searchParams.get("userId") ?? undefined,
     email: searchParams.get("email") ?? undefined,
     issueWeekStart: searchParams.get("issueWeekStart") ?? undefined,
-    limit: toOptionalNumber(searchParams.get("limit")),
-    dryRun: toBoolean(searchParams.get("dryRun")),
-    retryFailed: toBoolean(searchParams.get("retryFailed")),
+    limit: parseOptionalCronIntegerParam(req, "limit", { min: 1, max: 100 }),
+    dryRun: parseCronBooleanParam(req, "dryRun"),
+    retryFailed: parseCronBooleanParam(req, "retryFailed"),
   };
 }
 
@@ -48,8 +38,8 @@ function normalizePostBody(body: unknown): ManualJobOptions {
         ? Number(payload.limit)
         : undefined;
 
-  if (limit != null && !Number.isFinite(limit)) {
-    throw new Error("Invalid limit");
+  if (limit != null && !Number.isInteger(limit)) {
+    throw new CronRouteError("limit must be an integer", 400);
   }
 
   return {

@@ -49,6 +49,10 @@ export type FeedResponse = {
   personalized: boolean;
   hasSubscription: boolean;
   requiresLogin: boolean;
+  exactMatchTotal?: number;
+  strictMatchFallback?: boolean;
+  strictMatchMessage?: string | null;
+  fallbackType?: "topic" | null;
   devBypassAuth?: boolean;
   devBypassUserId?: string | null;
   devBypassSeedEmail?: string | null;

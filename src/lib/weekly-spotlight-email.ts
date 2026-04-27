@@ -1,3 +1,4 @@
+import { normalizeIsoWeekStart } from "@/lib/iso-week";
 import { buildSpotlightPapers } from "@/lib/spotlight";
 import {
   getWeeklySpotlightEmailSubject,
@@ -41,29 +42,6 @@ type UserRunResult = {
   paperIds?: string[];
 };
 
-function startOfIsoWeek(date: Date) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const day = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() - day + 1);
-  return d;
-}
-
-function toDateString(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function normalizeWeekStart(input?: string | null) {
-  if (!input) return toDateString(startOfIsoWeek(new Date()));
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input)) {
-    throw new Error("issueWeekStart must use YYYY-MM-DD format");
-  }
-  const parsed = new Date(`${input}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error("issueWeekStart is invalid");
-  }
-  return toDateString(startOfIsoWeek(parsed));
-}
-
 function normalizeLimit(limit?: number | null) {
   if (!limit || !Number.isFinite(limit) || limit <= 0) return null;
   return Math.min(Math.trunc(limit), 100);
@@ -71,7 +49,7 @@ function normalizeLimit(limit?: number | null) {
 
 export async function runWeeklySpotlightEmailJob(options: RunWeeklySpotlightEmailJobOptions = {}) {
   const service = createServiceSupabaseClient();
-  const issueWeekStart = normalizeWeekStart(options.issueWeekStart);
+  const issueWeekStart = normalizeIsoWeekStart(options.issueWeekStart);
   const limit = normalizeLimit(options.limit);
   const dryRun = options.dryRun === true;
   const retryFailed = options.retryFailed === true;

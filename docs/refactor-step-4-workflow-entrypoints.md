@@ -49,6 +49,8 @@ Added:
 - `src/lib/pubmed-keyword-expansion.ts`
 - `src/lib/pubmed-keyword-sync-stats.ts`
 - `src/lib/pubmed-sync-rules.ts`
+- `src/lib/pubmed-sync-queries.ts`
+- `src/lib/pubmed-summary-loader.ts`
 - `src/lib/pubmed-paper-scoring.ts`
 
 This module now owns the external PubMed/Unpaywall client details:
@@ -62,8 +64,7 @@ This module now owns the external PubMed/Unpaywall client details:
 
 `src/lib/pubmed-sync.ts` now keeps more of the workflow-level logic:
 
-- building sync queries
-- scoring candidate papers
+- coordinating sync query selection
 - assigning research topics
 - coordinating normal sync, backfill, journal sync, and keyword sync jobs
 
@@ -86,6 +87,19 @@ The paper scoring/upsert path also moved out of `src/lib/pubmed-sync.ts`.
 
 Shared rule vocabulary now lives in `src/lib/pubmed-sync-rules.ts` so the query
 builder and scoring path use the same AI/medical/topic term lists.
+
+PubMed query construction now lives in `src/lib/pubmed-sync-queries.ts`. It owns
+the exact strings sent to PubMed for:
+
+- broad keyword sync
+- top-journal sync
+- top-journal backfill
+- per-journal weekly windows
+
+Repeated "PMIDs -> summaries -> abstracts" loading now lives in
+`src/lib/pubmed-summary-loader.ts`. This keeps chunk size, PubMed `esummary`,
+delay timing, and abstract enrichment in one place without changing the current
+request timing.
 
 Keyword-sync aggregation now lives in `src/lib/pubmed-keyword-sync-stats.ts`.
 That file owns the in-memory bookkeeping for:
@@ -130,6 +144,47 @@ the verified project domain sender:
 The same value must also be set in Vercel/production environment variables.
 Otherwise deployed routes will keep using the old sender even if local
 development works.
+
+## Weekly Push Workflow Split
+
+Added:
+
+- `src/lib/email-template-utils.ts`
+- `src/lib/iso-week.ts`
+- `src/lib/weekly-push-email.ts`
+- `src/lib/weekly-push-selection.ts`
+
+The weekly push flow was carrying both delivery orchestration and article
+selection rules in the same file. Selection now has a separate module for:
+
+- sorting candidate papers by quality/date
+- spreading selected papers across journals
+- matching papers against normalized keywords and journal terms
+- falling back to raw user preferences when normalized preferences are absent
+
+`src/lib/weekly-push.ts` still owns the actual weekly job:
+
+- create/update the weekly issue draft
+- write issue items
+- load active users
+- skip papers already delivered to the same user
+- send email
+- record delivery rows
+
+This keeps the existing sending behavior intact while making the personalization
+rules easier to test or replace later.
+
+Weekly push email HTML now lives in `src/lib/weekly-push-email.ts`, and common
+email helpers such as text cleanup and HTML escaping live in
+`src/lib/email-template-utils.ts`. The weekly job also reports two additional
+non-breaking counters:
+
+- `skippedNoFreshPapersUsers`
+- `failedEmailUsers`
+
+Weekly date handling is also centralized in `src/lib/iso-week.ts`. Weekly push
+and weekly spotlight email now share the same "start of ISO week" calculation
+and issue-week normalization instead of each route owning a local copy.
 
 ## External Service Request Guardrails
 
@@ -302,6 +357,9 @@ system/user prompt, raw keywords, raw journals, token usage, and parse error.
   calls, and local dev-bypass calls are handled consistently.
 - `easyscholar-sync` and `quality-recompute` now reject invalid `batchSize`
   values before they reach workflow code.
+- `weekly-spotlight-email` now reuses shared cron query parsing for `limit`,
+  `dryRun`, and `retryFailed`; invalid `limit` requests return a 400-style cron
+  error instead of looking like a server failure.
 - PubMed/Unpaywall external API calls moved out of `pubmed-sync.ts` and into
   `pubmed-sync-client.ts`; no database behavior changed.
 - MiniMax keyword expansion moved out of `pubmed-sync.ts` and into
@@ -311,6 +369,17 @@ system/user prompt, raw keywords, raw journals, token usage, and parse error.
   `src/server/repositories/pubmed-sync.ts` functions.
 - Keyword-sync statistics moved into `pubmed-keyword-sync-stats.ts`; response
   fields are intended to stay the same.
+- PubMed query strings moved into `pubmed-sync-queries.ts`, and repeated PMID
+  summary loading moved into `pubmed-summary-loader.ts`; fetch timing and
+  response fields are intended to stay the same.
+- Weekly push article selection moved into `weekly-push-selection.ts`; delivery
+  orchestration and database writes remain in `weekly-push.ts`.
+- Weekly push email HTML moved into `weekly-push-email.ts`, and shared email
+  escaping/cleanup helpers moved into `email-template-utils.ts`.
+- Weekly push results now expose `failedEmailUsers` and
+  `skippedNoFreshPapersUsers` counters instead of silently hiding those cases.
+- Weekly push and weekly spotlight email now share the same ISO-week date
+  helper.
 - Daily spotlight email, weekly push email, and PDF-link email now share the
   same Resend configuration path.
 - Resend's testing domain is now treated as not production-ready. This turns
@@ -348,8 +417,9 @@ business workflow they trigger.
 
 ## Remaining Workflow Review Targets
 
-- Separate the largest workflow files into smaller internal units:
-  - `src/lib/pubmed-sync.ts`
-  - `src/lib/weekly-push.ts`
+- Continue separating the largest workflow files into smaller internal units:
   - `src/lib/weekly-spotlight-email.ts`
-- Review user-facing error messages around failed external services.
+- Review whether weekly spotlight delivery should expose more user-level
+  counters for skipped/failed cases.
+- Continue improving user-facing error labels for external services where logs
+  are still too technical.

@@ -45,6 +45,10 @@ type FeedResponse = {
   personalized: boolean;
   hasSubscription?: boolean;
   requiresLogin: boolean;
+  exactMatchTotal?: number;
+  strictMatchFallback?: boolean;
+  strictMatchMessage?: string | null;
+  fallbackType?: "topic" | null;
   devBypassAuth?: boolean;
   devBypassUserId?: string | null;
   devBypassSeedEmail?: string | null;
@@ -95,6 +99,9 @@ type WeeklyPushApiResponse = {
   sentCount?: number;
   skippedRepeatedUsers?: number;
   skippedNoMatchUsers?: number;
+  skippedNoFreshPapersUsers?: number;
+  fallbackPaperCount?: number;
+  failedEmailUsers?: number;
 };
 
 type WeeklySpotlightCronApiResponse = {
@@ -205,6 +212,32 @@ const fallbackPaper: DailyPaperView = {
   recommendationReason: null,
 };
 
+const exactMatchEmptyPaper: DailyPaperView = {
+  id: "exact-match-empty",
+  title: "\u6682\u672a\u627e\u5230\u540c\u65f6\u5339\u914d\u8ba2\u9605\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e",
+  titleZh: null,
+  journal: "Z-Lab",
+  journalIf: null,
+  journalJcr: null,
+  journalCasZone: null,
+  date: "Today",
+  qualityScore: null,
+  qualityTier: null,
+  pubmedUrl: "https://pubmed.ncbi.nlm.nih.gov/",
+  isOpenAccess: false,
+  oaPdfUrl: null,
+  pdfEmailedAt: null,
+  tagsRaw: [],
+  abstractZh:
+    "\u672c\u671f\u6587\u732e\u6c60\u91cc\u6ca1\u6709\u540c\u65f6\u6ee1\u8db3\u60a8\u8bbe\u5b9a\u7684\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002\u6211\u4eec\u4e0d\u4f1a\u7528\u53ea\u5339\u914d\u671f\u520a\u6216\u53ea\u5339\u914d\u5173\u952e\u8bcd\u7684\u6587\u732e\u6765\u51d1\u6570\uff0c\u60a8\u53ef\u4ee5\u653e\u5bbd\u8ba2\u9605\u6761\u4ef6\u6216\u7a0d\u540e\u518d\u67e5\u770b\u3002",
+  sourceType: "precision",
+  recommendationReason:
+    "\u672c\u671f\u6682\u65e0\u540c\u65f6\u547d\u4e2d\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u7ed3\u679c",
+};
+
+const defaultStrictMatchFallbackMessage =
+  "\u672c\u5468\u6682\u672a\u627e\u5230\u540c\u65f6\u5339\u914d\u8ba2\u9605\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002\u4ee5\u4e0b\u662f\u4e0e\u60a8\u7684\u7814\u7a76\u65b9\u5411\u5f3a\u76f8\u5173\u7684\u9ad8\u8d28\u91cf\u6587\u732e\u3002";
+
 export function DailyPaperModule() {
   const router = useRouter();
   const pathname = usePathname();
@@ -218,6 +251,8 @@ export function DailyPaperModule() {
   const [browsePage, setBrowsePage] = React.useState(1);
   const [browseTotalPages, setBrowseTotalPages] = React.useState(1);
   const [browseLoading, setBrowseLoading] = React.useState(false);
+  const [strictMatchMessage, setStrictMatchMessage] = React.useState<string | null>(null);
+  const [browseStrictMatchMessage, setBrowseStrictMatchMessage] = React.useState<string | null>(null);
   const [requiresLogin, setRequiresLogin] = React.useState(false);
   const [hasSubscription, setHasSubscription] = React.useState(false);
   const [currentUserEmail, setCurrentUserEmail] = React.useState<string | null>(null);
@@ -295,13 +330,23 @@ export function DailyPaperModule() {
       setDevBypassAuth(Boolean(json.devBypassAuth));
       setDevBypassUserId(json.devBypassUserId ?? null);
       setDevBypassSeedEmail(json.devBypassSeedEmail ?? null);
+      setStrictMatchMessage(
+        json.strictMatchFallback
+          ? (json.strictMatchMessage ?? defaultStrictMatchFallbackMessage)
+          : null,
+      );
       const rows = (json.papers ?? []).map(toDailyPaperView);
       if (rows.length) {
         setPaper(rows[0]);
+      } else if (json.hasSubscription && !json.requiresLogin) {
+        setPaper(exactMatchEmptyPaper);
+      } else {
+        setPaper(fallbackPaper);
       }
       setItems(rows.slice(1));
       setBrowseEnabled(false);
       setBrowseItems([]);
+      setBrowseStrictMatchMessage(null);
       setBrowsePage(1);
       setBrowseTotalPages(1);
       setExpandedSummaryIds({});
@@ -338,6 +383,11 @@ export function DailyPaperModule() {
         const rows = (json.papers ?? []).map(toDailyPaperView);
         const totalPages = Math.max(1, Math.ceil(Number(json.total ?? rows.length) / 12));
         setBrowseItems(rows);
+        setBrowseStrictMatchMessage(
+          json.strictMatchFallback
+            ? (json.strictMatchMessage ?? defaultStrictMatchFallbackMessage)
+            : null,
+        );
         setBrowsePage(page);
         setBrowseTotalPages(totalPages);
       } catch {
@@ -534,7 +584,7 @@ export function DailyPaperModule() {
         return;
       }
       setWeeklyPushMessage(
-        `weekly-push 已完成：周期 ${payload.weekStart ?? "未知"} ~ ${payload.weekEnd ?? "未知"}，入选 ${payload.selectedCount ?? 0} 篇，发送 ${payload.sentCount ?? 0} 人，跳过重复 ${payload.skippedRepeatedUsers ?? 0} 人，无匹配 ${payload.skippedNoMatchUsers ?? 0} 人。`,
+        `weekly-push 已完成：周期 ${payload.weekStart ?? "未知"} ~ ${payload.weekEnd ?? "未知"}，入选 ${payload.selectedCount ?? 0} 篇，发送 ${payload.sentCount ?? 0} 人，主题备选 ${payload.fallbackPaperCount ?? 0} 篇，跳过重复 ${payload.skippedRepeatedUsers ?? 0} 人，无匹配 ${payload.skippedNoMatchUsers ?? 0} 人，已推过无新文献 ${payload.skippedNoFreshPapersUsers ?? 0} 人，发送失败 ${payload.failedEmailUsers ?? 0} 人。`,
       );
     } catch {
       setWeeklyPushMessage("weekly-push 请求失败");
@@ -715,6 +765,12 @@ export function DailyPaperModule() {
           >
             请先登录
           </Link>
+        </div>
+      ) : null}
+
+      {strictMatchMessage ? (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+          {strictMatchMessage}
         </div>
       ) : null}
 
@@ -932,6 +988,16 @@ export function DailyPaperModule() {
             <div className="py-3 text-xs text-slate-500">加载中...</div>
           ) : (
             <div className="space-y-3">
+              {browseStrictMatchMessage ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-800">
+                  {browseStrictMatchMessage}
+                </div>
+              ) : null}
+              {!browseItems.length ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  {"\u672c\u9875\u6682\u65e0\u540c\u65f6\u5339\u914d\u60a8\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002"}
+                </div>
+              ) : null}
               {browseItems.map((it) => (
                 <div key={`browse-${it.id}`} className="rounded-xl border border-slate-200 bg-white p-3">
                   <a

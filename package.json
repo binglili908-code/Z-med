@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "db:export-contracts": "node src/scripts/export-db-contracts.mjs",
     "seed:journals": "npx tsx src/scripts/seed.ts",
     "seed:topics": "npx tsx src/scripts/seed-topics.ts"
@@ -14,10 +15,10 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.100.1",
     "lucide-react": "^0.577.0",
-    "next": "15.5.8",
+    "next": "15.5.15",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "resend": "^6.9.4"
+    "resend": "^6.12.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^2.1.4",
@@ -27,10 +28,16 @@
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.20",
     "eslint": "^8.57.0",
-    "eslint-config-next": "15.5.8",
+    "eslint-config-next": "15.5.15",
     "pg": "^8.20.0",
-    "postcss": "^8.4.47",
+    "postcss": "^8.5.12",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.21.0",
     "typescript": "^5.4.5"
+  },
+  "overrides": {
+    "resend": {
+      "svix": "1.92.2"
+    }
   }
 }
