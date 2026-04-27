@@ -19,6 +19,7 @@ type FeedPaper = {
   journal_jcr?: string | null;
   journal_cas_zone?: string | null;
   publication_date: string | null;
+  abstract: string | null;
   abstract_zh: string | null;
   quality_score: number;
   quality_tier: "top" | "core" | "emerging";
@@ -107,6 +108,14 @@ type WeeklySpotlightCronApiResponse = {
   skippedFailedUsers?: number;
 };
 
+type SubscriptionNormalizationApiResponse = {
+  ok?: boolean;
+  error?: string;
+  scannedCount?: number;
+  normalizedCount?: number;
+  failedCount?: number;
+};
+
 type DailyPaperView = {
   id: string;
   title: string;
@@ -134,18 +143,20 @@ function parseDate(date: string | null) {
 
 function resolveAbstractZh(
   abstractZh: string | null,
+  abstractEn: string | null,
   ai: Record<string, unknown> | null,
   fallbackDate: string,
 ) {
   if (abstractZh?.trim()) return abstractZh.trim();
   if (typeof ai?.summary_zh === "string" && ai.summary_zh.trim()) return ai.summary_zh.trim();
+  if (abstractEn?.trim()) return abstractEn.trim();
   return `中文摘要待生成（文献发布日期 ${fallbackDate}）。`;
 }
 
 function toDailyPaperView(p: FeedPaper): DailyPaperView {
   const journal = p.journal ?? "PubMed";
   const date = parseDate(p.publication_date);
-  const abstractZh = resolveAbstractZh(p.abstract_zh, p.ai_analysis, date);
+  const abstractZh = resolveAbstractZh(p.abstract_zh, p.abstract, p.ai_analysis, date);
 
   return {
     id: p.id,
@@ -221,6 +232,8 @@ export function DailyPaperModule() {
   const [weeklyPushMessage, setWeeklyPushMessage] = React.useState<string | null>(null);
   const [weeklySpotlightLoading, setWeeklySpotlightLoading] = React.useState(false);
   const [weeklySpotlightMessage, setWeeklySpotlightMessage] = React.useState<string | null>(null);
+  const [subscriptionNormalizationLoading, setSubscriptionNormalizationLoading] = React.useState(false);
+  const [subscriptionNormalizationMessage, setSubscriptionNormalizationMessage] = React.useState<string | null>(null);
   const [expandedSummaryIds, setExpandedSummaryIds] = React.useState<Record<string, boolean>>({});
   const authRedirect = React.useMemo(
     () => buildRedirectTarget(pathname, searchParams.toString()),
@@ -559,6 +572,35 @@ export function DailyPaperModule() {
       setWeeklySpotlightLoading(false);
     }
   }, [currentUserEmail, getAccessToken]);
+
+  const handleSubscriptionNormalizationNow = React.useCallback(async () => {
+    setSubscriptionNormalizationLoading(true);
+    setSubscriptionNormalizationMessage(null);
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setSubscriptionNormalizationMessage(`请先使用 ${DEV_PANEL_EMAIL} 登录后再标准化订阅偏好。`);
+        return;
+      }
+      const res = await fetch("/api/cron/subscription-normalization?limit=10", {
+        method: "GET",
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = (await res.json()) as SubscriptionNormalizationApiResponse;
+      if (!res.ok || !payload.ok) {
+        setSubscriptionNormalizationMessage(payload.error ?? "订阅偏好标准化失败");
+        return;
+      }
+      setSubscriptionNormalizationMessage(
+        `订阅偏好标准化完成：扫描 ${payload.scannedCount ?? 0} 个用户，成功 ${payload.normalizedCount ?? 0} 个，失败 ${payload.failedCount ?? 0} 个。`,
+      );
+    } catch {
+      setSubscriptionNormalizationMessage("订阅偏好标准化请求失败");
+    } finally {
+      setSubscriptionNormalizationLoading(false);
+    }
+  }, [getAccessToken]);
 
   const handleExpandBrowse = React.useCallback(async () => {
     setBrowseEnabled(true);
@@ -1010,10 +1052,21 @@ export function DailyPaperModule() {
               {weeklySpotlightLoading ? "首页精选周邮件执行中…" : "一键触发首页精选周邮件"}
             </button>
           </div>
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={handleSubscriptionNormalizationNow}
+              disabled={subscriptionNormalizationLoading}
+              className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-amber-100"
+            >
+              {subscriptionNormalizationLoading ? "订阅偏好标准化中…" : "一键标准化订阅偏好"}
+            </button>
+          </div>
           <div className="mt-2">{selfCheckMessage ?? "点击按钮检查用户解析、OA文献与邮件配置。"}</div>
           <div className="mt-1">{syncMessage ?? "点击按钮触发同步任务并自动刷新文献列表。"}</div>
           <div className="mt-1">{weeklyPushMessage ?? "适合无命令行场景，点击后直接显示周推送执行结果。"}</div>
           <div className="mt-1">{weeklySpotlightMessage ?? "首页精选周邮件默认仅投递当前授权邮箱，便于手动验收。"}</div>
+          <div className="mt-1">{subscriptionNormalizationMessage ?? "订阅偏好标准化会把旧用户的简写、拼写错误和英文词扩展成更适合匹配的词。"}</div>
         </div>
       ) : null}
     </div>

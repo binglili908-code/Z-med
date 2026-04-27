@@ -1,4 +1,5 @@
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { isMissingColumnError } from "@/server/repositories/schema-compat";
 
 type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "from">;
 
@@ -6,6 +7,8 @@ export type RecommendationProfileRow = {
   is_active: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
+  subscription_normalized_keywords?: string[] | null;
+  subscription_normalized_journals?: string[] | null;
 };
 
 export type RecommendationCandidatePaperRow = {
@@ -29,17 +32,38 @@ export type FeedRecommendationUpsertRow = {
   batch_date: string;
 };
 
+const RECOMMENDATION_PROFILE_SELECT =
+  "is_active,subscription_keywords,custom_journals";
+const RECOMMENDATION_PROFILE_NORMALIZED_SELECT =
+  "is_active,subscription_keywords,custom_journals,subscription_normalized_keywords,subscription_normalized_journals";
+
 export async function getRecommendationProfile(
   client: SupabaseDbClient,
   userId: string,
 ) {
-  const { data } = await client
+  const normalizedQuery = await client
     .from("profiles")
-    .select("is_active,subscription_keywords,custom_journals")
+    .select(RECOMMENDATION_PROFILE_NORMALIZED_SELECT)
     .eq("id", userId)
     .maybeSingle();
 
-  return (data as RecommendationProfileRow | null) ?? null;
+  if (normalizedQuery.error && isMissingColumnError(normalizedQuery.error)) {
+    const legacyQuery = await client
+      .from("profiles")
+      .select(RECOMMENDATION_PROFILE_SELECT)
+      .eq("id", userId)
+      .maybeSingle();
+    if (legacyQuery.error) {
+      throw new Error(`Failed to load recommendation profile: ${legacyQuery.error.message}`);
+    }
+    return (legacyQuery.data as RecommendationProfileRow | null) ?? null;
+  }
+
+  if (normalizedQuery.error) {
+    throw new Error(`Failed to load recommendation profile: ${normalizedQuery.error.message}`);
+  }
+
+  return (normalizedQuery.data as RecommendationProfileRow | null) ?? null;
 }
 
 export async function listRecommendationCandidatePapers(client: SupabaseDbClient) {

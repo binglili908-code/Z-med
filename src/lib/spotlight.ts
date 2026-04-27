@@ -1,5 +1,11 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
+  buildSearchText,
+  expandSubscriptionTerms,
+  journalMatchesAnyTerm,
+  textMatchesAnyTerm,
+} from "@/lib/subscription-matching";
+import {
   getPaperEmailInteractions,
   listRecentQualityPapers,
   mapPaperToPaperCard,
@@ -12,18 +18,9 @@ export type SpotlightSourceType = RecommendationSourceType;
 
 export type SpotlightPaper = PaperCard;
 
-function normalizeList(values: string[] | null | undefined) {
-  const set = new Set<string>();
-  for (const raw of values ?? []) {
-    const value = raw.trim().toLowerCase();
-    if (value) set.add(value);
-  }
-  return Array.from(set);
-}
-
 function includesAnyKeyword(paper: DbPaper, keywords: string[]) {
   if (!keywords.length) return true;
-  const text = [
+  return textMatchesAnyTerm(buildSearchText([
     paper.title ?? "",
     paper.title_zh ?? "",
     paper.abstract ?? "",
@@ -32,10 +29,7 @@ function includesAnyKeyword(paper: DbPaper, keywords: string[]) {
     (paper.keywords ?? []).join(" "),
     (paper.mesh_terms ?? []).join(" "),
     paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
-  ]
-    .join("\n")
-    .toLowerCase();
-  return keywords.some((keyword) => text.includes(keyword));
+  ]), keywords);
 }
 
 export async function buildSpotlightPapers(params: {
@@ -46,16 +40,14 @@ export async function buildSpotlightPapers(params: {
   const { userId } = params;
 
   let hasProfileConfig = false;
-  const journalTerms = new Set<string>();
+  let journalTerms: string[] = [];
   const keywords: string[] = [];
 
   if (userId) {
     const subscriptionStatus = await getProfileSubscriptionStatus(service, userId);
     if (subscriptionStatus.subscriptionEnabled) {
-      for (const keyword of normalizeList(subscriptionStatus.keywords)) keywords.push(keyword);
-      for (const journal of normalizeList(subscriptionStatus.customJournals)) {
-        journalTerms.add(journal);
-      }
+      keywords.push(...expandSubscriptionTerms(subscriptionStatus.matchingKeywords));
+      journalTerms = expandSubscriptionTerms(subscriptionStatus.matchingJournals);
       hasProfileConfig = subscriptionStatus.hasSubscriptionConfig;
     }
   }
@@ -78,13 +70,9 @@ export async function buildSpotlightPapers(params: {
   });
 
   const scored = papers.map((paper) => {
-    const journal = (paper.journal ?? "").trim().toLowerCase();
-    const journalMatch =
-      !journalTerms.size
-        ? false
-        : Array.from(journalTerms).some(
-            (term) => journal === term || journal.includes(term) || term.includes(journal),
-          );
+    const journalMatch = journalTerms.length
+      ? journalMatchesAnyTerm(paper.journal, journalTerms)
+      : false;
     const keywordMatch = keywords.length ? includesAnyKeyword(paper, keywords) : false;
     const relevanceScore =
       (journalMatch ? 2 : 0) + (keywordMatch ? 2 : 0) + Number(paper.quality_score ?? 0) / 100;

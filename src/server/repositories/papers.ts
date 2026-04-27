@@ -1,4 +1,10 @@
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
+import {
+  buildSearchText,
+  expandSubscriptionTerms,
+  journalMatchesAnyTerm,
+  textMatchesAnyTerm,
+} from "@/lib/subscription-matching";
 import type {
   FeedPaper,
   PaperCard,
@@ -118,6 +124,7 @@ export function mapPaperToPaperCard(
     pubmed_url: paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/",
     is_open_access: Boolean(paper.is_open_access),
     oa_pdf_url: paper.oa_pdf_url,
+    abstract: paper.abstract,
     abstract_zh: paper.abstract_zh,
     ai_analysis: normalizeAiAnalysis(paper.ai_analysis),
     source_type: normalizeSourceType(options.sourceType ?? paper.source_type),
@@ -245,7 +252,8 @@ export async function getPaperEmailInteractions(
 
 function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
   if (!terms.length) return true;
-  const haystack = [
+  const expandedTerms = expandSubscriptionTerms(terms);
+  const haystack = buildSearchText([
     paper.title ?? "",
     paper.title_zh ?? "",
     paper.abstract ?? "",
@@ -253,10 +261,11 @@ function paperMatchesTerms(paper: SearchPaperRow, terms: string[]) {
     paper.journal ?? "",
     ...(paper.keywords ?? []),
     ...(paper.mesh_terms ?? []),
-  ]
-    .join("\n")
-    .toLowerCase();
-  return terms.some((term) => haystack.includes(term));
+  ]);
+  return (
+    textMatchesAnyTerm(haystack, expandedTerms) ||
+    journalMatchesAnyTerm(paper.journal, expandedTerms)
+  );
 }
 
 export async function searchPapers(

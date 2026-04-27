@@ -28,6 +28,10 @@ const emptySubscriptionStatus: ProfileSubscriptionStatus = {
   hasSubscriptionConfig: false,
   keywords: [],
   customJournals: [],
+  matchingKeywords: [],
+  matchingJournals: [],
+  normalizedAt: null,
+  normalizationError: null,
 };
 
 function getBearerToken(req: Request) {

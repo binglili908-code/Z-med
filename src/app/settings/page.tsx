@@ -11,6 +11,10 @@ type UserSubscription = {
   subscription_enabled: boolean;
   custom_journals: string[];
   keywords: string[];
+  normalized_custom_journals?: string[];
+  normalized_keywords?: string[];
+  preference_normalization_error?: string | null;
+  ai_normalized?: boolean;
 };
 
 export default function SettingsPage() {
@@ -107,12 +111,18 @@ export default function SettingsPage() {
           keywords,
         } satisfies UserSubscription),
       });
-      const payload = (await res.json()) as { error?: string };
+      const payload = (await res.json()) as UserSubscription & { error?: string };
       if (!res.ok) {
         setMessage(payload.error ?? "保存失败，请重试。");
         return;
       }
-      setMessage("订阅偏好已保存。");
+      setMessage(
+        payload.preference_normalization_error
+          ? "订阅偏好已保存；AI 标准化暂时失败，系统会先使用本地别名匹配。"
+          : payload.ai_normalized
+            ? "订阅偏好已保存，并已完成 AI 标准化。"
+            : "订阅偏好已保存。",
+      );
     } catch {
       setMessage("保存失败，请重试。");
     } finally {

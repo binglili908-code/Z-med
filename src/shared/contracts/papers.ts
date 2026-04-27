@@ -28,6 +28,7 @@ export type PaperCard = {
   pubmed_url: string;
   is_open_access: boolean;
   oa_pdf_url: string | null;
+  abstract: string | null;
   abstract_zh: string | null;
   ai_analysis: PaperAiAnalysis | null;
   source_type: RecommendationSourceType;

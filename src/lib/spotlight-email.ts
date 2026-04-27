@@ -24,6 +24,62 @@ function getBaseUrl() {
   return baseUrl.replace(/\/+$/, "");
 }
 
+function escapeHtml(value: string | null | undefined) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function cleanText(value: string | null | undefined) {
+  const text = value?.trim();
+  return text ? text : null;
+}
+
+function buildTitleHtml(item: SpotlightPaper) {
+  const titleZh = cleanText(item.title_zh);
+  const titleEn = cleanText(item.title);
+  if (titleZh && titleEn && titleZh !== titleEn) {
+    return `
+        <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:4px;">${escapeHtml(titleZh)}</div>
+        <div style="font-size:13px;color:#475569;margin-bottom:8px;">${escapeHtml(titleEn)}</div>
+    `;
+  }
+  return `<div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:8px;">${escapeHtml(titleEn ?? "")}</div>`;
+}
+
+function buildAbstractHtml(item: SpotlightPaper) {
+  const abstractZh = cleanText(item.abstract_zh ?? item.ai_analysis?.summary_zh);
+  const abstractEn = cleanText(item.abstract);
+
+  if (abstractZh && abstractEn && abstractZh !== abstractEn) {
+    return `
+        <div style="font-size:12px;font-weight:700;color:#0f172a;margin:10px 0 4px;">中文摘要</div>
+        <div style="font-size:13px;line-height:1.7;color:#334155;white-space:pre-wrap;">${escapeHtml(abstractZh)}</div>
+        <div style="font-size:12px;font-weight:700;color:#0f172a;margin:12px 0 4px;">English Abstract</div>
+        <div style="font-size:13px;line-height:1.7;color:#475569;white-space:pre-wrap;">${escapeHtml(abstractEn)}</div>
+    `;
+  }
+
+  if (abstractZh) {
+    return `
+        <div style="font-size:12px;font-weight:700;color:#0f172a;margin:10px 0 4px;">中文摘要</div>
+        <div style="font-size:13px;line-height:1.7;color:#334155;white-space:pre-wrap;">${escapeHtml(abstractZh)}</div>
+    `;
+  }
+
+  if (abstractEn) {
+    return `
+        <div style="font-size:12px;font-weight:700;color:#0f172a;margin:10px 0 4px;">English Abstract</div>
+        <div style="font-size:13px;line-height:1.7;color:#475569;white-space:pre-wrap;">${escapeHtml(abstractEn)}</div>
+    `;
+  }
+
+  return `<div style="font-size:13px;line-height:1.7;color:#64748b;">暂无摘要。</div>`;
+}
+
 function sourceTypeLabel(sourceType: SpotlightPaper["source_type"]) {
   switch (sourceType) {
     case "precision":
@@ -51,10 +107,10 @@ export function buildSpotlightDigestHtml(
           <span style="display:inline-block;font-size:11px;color:#0369a1;background:#e0f2fe;border:1px solid #bae6fd;border-radius:6px;padding:3px 8px;margin-right:6px;">${sourceTypeLabel(item.source_type)}</span>
           <span style="display:inline-block;font-size:11px;color:#065f46;background:#d1fae5;border:1px solid #a7f3d0;border-radius:6px;padding:3px 8px;">${(item.quality_tier ?? "").toUpperCase()}</span>
         </div>
-        <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:8px;">${item.title}</div>
-        <div style="font-size:12px;color:#64748b;margin-bottom:8px;">${item.journal} · ${item.publication_date ?? "N/A"}</div>
-        <div style="margin-bottom:8px;"><a href="${item.pubmed_url}" target="_blank" rel="noreferrer">查看 PubMed 原文</a></div>
-        <div style="font-size:13px;line-height:1.7;color:#334155;white-space:pre-wrap;">${item.abstract_zh ?? "中文摘要待生成。"}</div>
+        ${buildTitleHtml(item)}
+        <div style="font-size:12px;color:#64748b;margin-bottom:8px;">${escapeHtml(item.journal)} · ${escapeHtml(item.publication_date ?? "N/A")}</div>
+        <div style="margin-bottom:8px;"><a href="${escapeHtml(item.pubmed_url)}" target="_blank" rel="noreferrer">查看 PubMed 原文</a></div>
+        ${buildAbstractHtml(item)}
       </div>
     `,
     )

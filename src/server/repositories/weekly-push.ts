@@ -1,4 +1,5 @@
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { isMissingColumnError } from "@/server/repositories/schema-compat";
 
 type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "from">;
 
@@ -24,6 +25,8 @@ export type WeeklyPushProfileRow = {
   is_active: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
+  subscription_normalized_keywords?: string[] | null;
+  subscription_normalized_journals?: string[] | null;
 };
 
 export type WeeklyPushDeliveryInsert = {
@@ -46,6 +49,10 @@ export type WeeklyPushIssueMeta = {
 
 const WEEKLY_CANDIDATE_SELECT =
   "id,title,title_zh,abstract,abstract_zh,ai_analysis,pubmed_url,quality_score,quality_tier,publication_date,journal,keywords,mesh_terms";
+const WEEKLY_PROFILE_SELECT =
+  "id,contact_email,is_active,subscription_keywords,custom_journals";
+const WEEKLY_PROFILE_NORMALIZED_SELECT =
+  "id,contact_email,is_active,subscription_keywords,custom_journals,subscription_normalized_keywords,subscription_normalized_journals";
 
 export async function listWeeklyPushCandidatePapers(
   client: SupabaseDbClient,
@@ -118,14 +125,25 @@ export async function replaceWeeklyPushIssueItems(
 }
 
 export async function listActiveWeeklyPushProfiles(client: SupabaseDbClient) {
-  const { data, error } = await client
+  const normalizedQuery = await client
     .from("profiles")
-    .select("id,contact_email,is_active,subscription_keywords,custom_journals")
+    .select(WEEKLY_PROFILE_NORMALIZED_SELECT)
     .eq("is_active", true)
     .not("contact_email", "is", null);
-  if (error) throw new Error(`Load profiles failed: ${error.message}`);
 
-  return (data ?? []) as WeeklyPushProfileRow[];
+  if (normalizedQuery.error && isMissingColumnError(normalizedQuery.error)) {
+    const legacyQuery = await client
+      .from("profiles")
+      .select(WEEKLY_PROFILE_SELECT)
+      .eq("is_active", true)
+      .not("contact_email", "is", null);
+    if (legacyQuery.error) throw new Error(`Load profiles failed: ${legacyQuery.error.message}`);
+    return (legacyQuery.data ?? []) as WeeklyPushProfileRow[];
+  }
+
+  if (normalizedQuery.error) throw new Error(`Load profiles failed: ${normalizedQuery.error.message}`);
+
+  return (normalizedQuery.data ?? []) as WeeklyPushProfileRow[];
 }
 
 export async function hasWeeklyPushDeliveryForIssue(

@@ -1,5 +1,11 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
+  buildSearchText,
+  expandSubscriptionTerms,
+  journalMatchesAnyTerm,
+  textMatchesAnyTerm,
+} from "@/lib/subscription-matching";
+import {
   getRecommendationProfile,
   listRecommendationCandidatePapers,
   upsertFeedRecommendations,
@@ -18,19 +24,9 @@ export interface RecommendationOutput {
   reason: string;
 }
 
-function normalizeKeywords(values: string[] | null | undefined) {
-  const set = new Set<string>();
-  for (const raw of values ?? []) {
-    const value = raw.trim().toLowerCase();
-    if (value) set.add(value);
-  }
-  return Array.from(set);
-}
-
 function matchesKeyword(texts: string[], keywords: string[]) {
   if (!keywords.length) return true;
-  const text = texts.join("\n").toLowerCase();
-  return keywords.some((keyword) => text.includes(keyword));
+  return textMatchesAnyTerm(buildSearchText(texts), keywords);
 }
 
 function filterByJournalTerms(
@@ -40,12 +36,7 @@ function filterByJournalTerms(
   if (!journalTerms.size) return papers;
 
   return papers.filter((paper) => {
-    const journal = (paper.journal ?? "").trim().toLowerCase();
-    if (!journal) return false;
-    for (const term of journalTerms) {
-      if (journal === term || journal.includes(term) || term.includes(journal)) return true;
-    }
-    return false;
+    return journalMatchesAnyTerm(paper.journal, Array.from(journalTerms));
   });
 }
 
@@ -79,8 +70,16 @@ export async function generateRecommendations(
     return [];
   }
 
-  const profileKeywords = normalizeKeywords(profile?.subscription_keywords);
-  const customJournals = normalizeKeywords(profile?.custom_journals);
+  const profileKeywords = expandSubscriptionTerms(
+    profile?.subscription_normalized_keywords?.length
+      ? profile.subscription_normalized_keywords
+      : profile?.subscription_keywords,
+  );
+  const customJournals = expandSubscriptionTerms(
+    profile?.subscription_normalized_journals?.length
+      ? profile.subscription_normalized_journals
+      : profile?.custom_journals,
+  );
   const journalTerms = new Set(customJournals);
 
   let papers = await listRecommendationCandidatePapers(supabase);

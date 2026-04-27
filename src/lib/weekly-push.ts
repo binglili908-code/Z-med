@@ -1,6 +1,12 @@
 import { createResendEmailSender } from "@/lib/resend-email";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
+  buildSearchText,
+  expandSubscriptionTerms,
+  journalMatchesAnyTerm,
+  textMatchesAnyTerm,
+} from "@/lib/subscription-matching";
+import {
   hasWeeklyPushDeliveryForIssue,
   insertWeeklyPushDeliveries,
   listActiveWeeklyPushProfiles,
@@ -24,14 +30,61 @@ function toDateString(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
+function escapeHtml(value: string | null | undefined) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function cleanText(value: string | null | undefined) {
+  const text = value?.trim();
+  return text ? text : null;
+}
+
+function buildPaperTitleHtml(paper: WeeklyPushCandidatePaper, index: number) {
+  const titleZh = cleanText(paper.title_zh);
+  const titleEn = cleanText(paper.title);
+  if (titleZh && titleEn && titleZh !== titleEn) {
+    return `
+        <div><strong>${index + 1}. ${escapeHtml(titleZh)}</strong></div>
+        <div style="font-size:13px;color:#475569;">${escapeHtml(titleEn)}</div>
+    `;
+  }
+  return `<div><strong>${index + 1}. ${escapeHtml(titleEn ?? "")}</strong></div>`;
+}
+
+function buildPaperAbstractHtml(paper: WeeklyPushCandidatePaper) {
+  const abstractZh = cleanText(paper.abstract_zh);
+  const abstractEn = cleanText(paper.abstract);
+  if (abstractZh && abstractEn && abstractZh !== abstractEn) {
+    return `
+        <div style="font-size:12px;font-weight:700;color:#0f172a;margin-top:8px;">中文摘要</div>
+        <div style="font-size:13px;color:#334155;white-space:pre-wrap;">${escapeHtml(abstractZh)}</div>
+        <div style="font-size:12px;font-weight:700;color:#0f172a;margin-top:8px;">English Abstract</div>
+        <div style="font-size:13px;color:#475569;white-space:pre-wrap;">${escapeHtml(abstractEn)}</div>
+    `;
+  }
+  if (abstractZh) {
+    return `<div style="font-size:13px;color:#334155;white-space:pre-wrap;margin-top:8px;">${escapeHtml(abstractZh)}</div>`;
+  }
+  if (abstractEn) {
+    return `<div style="font-size:13px;color:#475569;white-space:pre-wrap;margin-top:8px;">${escapeHtml(abstractEn)}</div>`;
+  }
+  return "";
+}
+
 function buildDigestHtml(papers: WeeklyPushCandidatePaper[]) {
   const list = papers
     .map(
       (paper, index) => `
       <li style="margin-bottom:12px;">
-        <div><strong>${index + 1}. ${paper.title}</strong></div>
-        <div style="font-size:12px;color:#666;">${paper.journal ?? "PubMed"} · ${paper.publication_date ?? "N/A"} · score ${paper.quality_score ?? 0}</div>
-        <div><a href="${paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/"}" target="_blank" rel="noreferrer">${paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/"}</a></div>
+        ${buildPaperTitleHtml(paper, index)}
+        <div style="font-size:12px;color:#666;">${escapeHtml(paper.journal ?? "PubMed")} · ${escapeHtml(paper.publication_date ?? "N/A")} · score ${escapeHtml(String(paper.quality_score ?? 0))}</div>
+        <div><a href="${escapeHtml(paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/")}" target="_blank" rel="noreferrer">${escapeHtml(paper.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/")}</a></div>
+        ${buildPaperAbstractHtml(paper)}
       </li>`,
     )
     .join("");
@@ -41,15 +94,6 @@ function buildDigestHtml(papers: WeeklyPushCandidatePaper[]) {
       <ol>${list}</ol>
     </div>
   `;
-}
-
-function normalizeList(values: string[] | null | undefined) {
-  const set = new Set<string>();
-  for (const raw of values ?? []) {
-    const value = raw.trim().toLowerCase();
-    if (value) set.add(value);
-  }
-  return Array.from(set);
 }
 
 function normalizeTitle(title: string) {
@@ -62,14 +106,12 @@ function normalizeTitle(title: string) {
 
 function matchJournal(paper: WeeklyPushCandidatePaper, journalTerms: string[]) {
   if (!journalTerms.length) return true;
-  const journal = (paper.journal ?? "").trim().toLowerCase();
-  if (!journal) return false;
-  return journalTerms.some((term) => journal === term || journal.includes(term) || term.includes(journal));
+  return journalMatchesAnyTerm(paper.journal, journalTerms);
 }
 
 function matchKeyword(paper: WeeklyPushCandidatePaper, keywords: string[]) {
   if (!keywords.length) return true;
-  const text = [
+  return textMatchesAnyTerm(buildSearchText([
     paper.title ?? "",
     paper.title_zh ?? "",
     paper.abstract ?? "",
@@ -78,10 +120,7 @@ function matchKeyword(paper: WeeklyPushCandidatePaper, keywords: string[]) {
     (paper.keywords ?? []).join(" "),
     (paper.mesh_terms ?? []).join(" "),
     paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
-  ]
-    .join("\n")
-    .toLowerCase();
-  return keywords.some((keyword) => text.includes(keyword));
+  ]), keywords);
 }
 
 function sortCandidates(candidates: WeeklyPushCandidatePaper[]) {
@@ -126,8 +165,14 @@ function selectPersonalizedPool(
   candidates: WeeklyPushCandidatePaper[],
   profile: WeeklyPushProfileRow,
 ) {
-  const keywords = normalizeList(profile.subscription_keywords);
-  const journals = normalizeList(profile.custom_journals);
+  const rawKeywords = profile.subscription_normalized_keywords?.length
+    ? profile.subscription_normalized_keywords
+    : profile.subscription_keywords;
+  const rawJournals = profile.subscription_normalized_journals?.length
+    ? profile.subscription_normalized_journals
+    : profile.custom_journals;
+  const keywords = expandSubscriptionTerms(rawKeywords);
+  const journals = expandSubscriptionTerms(rawJournals);
   const hasKeywords = keywords.length > 0;
   const hasJournals = journals.length > 0;
 

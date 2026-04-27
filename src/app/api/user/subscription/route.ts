@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { normalizeSubscriptionPreferences } from "@/lib/subscription-preference-normalizer";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
 import {
   getUserSubscription,
@@ -69,7 +70,11 @@ export async function PUT(req: Request) {
   }
 
   try {
-    const payload = await saveUserSubscription(userClient, user.id, body);
+    const normalized = await normalizeSubscriptionPreferences({
+      keywords: body.keywords ?? [],
+      customJournals: body.custom_journals ?? [],
+    });
+    const payload = await saveUserSubscription(userClient, user.id, body, normalized);
     return NextResponse.json(payload satisfies UserSubscriptionSaveResponse);
   } catch (error) {
     return NextResponse.json({ error: errorMessage(error) }, { status: 500 });

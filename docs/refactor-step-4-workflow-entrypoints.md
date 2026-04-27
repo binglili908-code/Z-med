@@ -186,6 +186,93 @@ pool in application code and includes `journal`, `keywords`, and `mesh_terms`
 in keyword matching. This keeps the seven-paper email personalized without
 requiring a database function change.
 
+## Subscription Matching And Email Abstract Fallback
+
+Added:
+
+- `src/lib/subscription-matching.ts`
+
+Updated:
+
+- `src/lib/spotlight-email.ts`
+- `src/lib/weekly-push.ts`
+- `src/lib/spotlight.ts`
+- `src/lib/recommendation-engine.ts`
+- `src/server/repositories/papers.ts`
+- `src/shared/contracts/papers.ts`
+- `src/components/home/daily-paper-module.tsx`
+
+Email rendering now shows bilingual paper context when available:
+
+- Chinese title plus English title when both exist
+- Chinese abstract plus English abstract when both exist
+- English abstract only when the Chinese abstract has not been generated
+
+Subscription matching now has a shared normalizer:
+
+- case-insensitive matching
+- punctuation/space normalization
+- journal acronym matching
+- small acronym typo tolerance
+- a lightweight alias table for common medical abbreviations such as `EJVES`,
+  `JVS`, `LLM`, `HCC`, and `ICU`
+
+This is intentionally an application-layer fix. It does not require a database
+schema or RPC migration. A future, stronger version can move the alias library
+into a managed database table or add LLM-assisted preference normalization.
+
+## AI-Normalized Subscription Preferences
+
+Added:
+
+- `src/lib/subscription-preference-normalizer.ts`
+- `src/lib/subscription-normalization-backfill.ts`
+- `src/app/api/cron/subscription-normalization/route.ts`
+- `sql/p7_subscription_preference_normalization.sql`
+- `docs/sql-change-proposals/20260426_subscription_preference_normalization.md`
+- `src/server/repositories/schema-compat.ts`
+
+When a user saves subscription preferences, the app now attempts to call
+MiniMax once to normalize raw inputs such as:
+
+- journal acronyms
+- misspellings
+- short natural-language research interests
+- mixed English/Chinese terms
+
+The raw user-facing inputs remain in:
+
+- `profiles.subscription_keywords`
+- `profiles.custom_journals`
+
+The normalized matching cache is expected to live in new optional columns:
+
+- `profiles.subscription_normalized_keywords`
+- `profiles.subscription_normalized_journals`
+- `profiles.subscription_normalized_terms`
+- `profiles.subscription_normalized_at`
+- `profiles.subscription_normalization_model`
+- `profiles.subscription_normalization_error`
+
+The app is backward compatible. If Claude has not applied the SQL yet, the save
+path falls back to the existing raw columns and local alias matching. After the
+SQL is applied, homepage spotlight, weekly push, recommendation refresh, and
+search can reuse the cached normalized terms without calling MiniMax again.
+
+The new cron/admin endpoint can normalize users that Claude backfilled as
+`raw_backfill`:
+
+- `GET /api/cron/subscription-normalization?limit=10`
+
+It uses the same cron authorization shell as the other internal jobs.
+The homepage developer panel also has a manual button for this endpoint, so the
+backfill can be run without a terminal after deployment.
+If MiniMax fails during this backfill, the app reports the failure but keeps the
+row marked as `raw_backfill` so it can be retried later.
+MiniMax normalization requires `MINIMAX_API_KEY` in the runtime environment;
+`MINIMAX_GROUP_ID` is optional. When the key is missing, the app keeps working
+with local alias matching instead of failing the subscription save.
+
 ## Behavior Notes
 
 - The response shapes are intended to remain compatible with existing callers.
@@ -217,7 +304,14 @@ requiring a database function change.
   var.
 - The seven-paper spotlight email no longer depends on the hidden
   `get_personalized_feed` RPC to decide which papers are personalized.
-- No database schema or RPC changes were made.
+- Spotlight and weekly-push emails no longer expose "Chinese abstract pending"
+  when an English abstract is available.
+- User subscription matching now understands important English abbreviations
+  and journal acronyms, so inputs such as `EJVES` can match the full journal
+  name.
+- Saving subscription preferences now attempts one MiniMax normalization pass
+  and caches the result when the optional database columns exist.
+- No production database schema or RPC changes were executed by Codex.
 
 ## Why This Matters
 
