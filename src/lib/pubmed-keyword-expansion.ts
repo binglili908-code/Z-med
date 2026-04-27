@@ -1,4 +1,5 @@
 import { callMiniMaxChat, getMiniMaxApiKey } from "@/lib/minimax";
+import { parseJsonObjectFromModelOutput } from "@/lib/model-json";
 
 type KeywordExpansionResult = {
   pubmed_query?: string;
@@ -21,26 +22,6 @@ export function extractPubmedQueryText(value: unknown) {
   return "";
 }
 
-function parseJsonFromModelOutput(text: string) {
-  const trimmed = text.trim();
-  const cleaned = trimmed.startsWith("```")
-    ? trimmed
-        .replace(/^```[a-zA-Z]*\n?/, "")
-        .replace(/```$/, "")
-        .trim()
-    : trimmed;
-  try {
-    return JSON.parse(cleaned) as KeywordExpansionResult;
-  } catch {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return JSON.parse(cleaned.slice(start, end + 1)) as KeywordExpansionResult;
-    }
-    throw new Error("MiniMax keyword response was not valid JSON");
-  }
-}
-
 export async function callMiniMaxKeywordExpansion(prompt: string) {
   if (!getMiniMaxApiKey()) return null;
 
@@ -50,7 +31,10 @@ export async function callMiniMaxKeywordExpansion(prompt: string) {
       maxTokens: 500,
       temperature: 0.1,
     });
-    return parseJsonFromModelOutput(response.content);
+    return parseJsonObjectFromModelOutput<KeywordExpansionResult>(
+      response.content,
+      "MiniMax keyword response",
+    );
   } catch {
     return null;
   }

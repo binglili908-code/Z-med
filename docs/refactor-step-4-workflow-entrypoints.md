@@ -280,6 +280,9 @@ is missing, the app keeps working with local alias matching instead of failing
 the subscription save.
 MiniMax's OpenAI-compatible endpoint rejects `temperature: 0`, so the shared
 client clamps temperature into the documented `(0.0, 1.0]` range.
+The shared client also sends `reasoning_split: true`, and JSON consumers parse
+the first complete JSON object from model output so extra thinking or short
+explanations do not break preference normalization.
 
 ## Behavior Notes
 

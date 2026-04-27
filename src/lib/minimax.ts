@@ -119,6 +119,7 @@ async function callMiniMaxChatWithModel(
       messages,
       temperature: normalizeMiniMaxTemperature(req.temperature),
       max_completion_tokens: req.maxTokens ?? 1600,
+      reasoning_split: true,
     }),
     cache: "no-store",
     label: "MiniMax chat",

@@ -1,4 +1,5 @@
 import { callMiniMaxChat, getMiniMaxApiKey } from "@/lib/minimax";
+import { parseJsonObjectFromModelOutput } from "@/lib/model-json";
 import {
   expandSubscriptionTerms,
   normalizeMatchText,
@@ -37,26 +38,6 @@ function dedupeTerms(values: unknown, maxItems: number) {
   }
 
   return out;
-}
-
-function parseJsonFromModelOutput(text: string) {
-  const trimmed = text.trim();
-  const cleaned = trimmed.startsWith("```")
-    ? trimmed
-        .replace(/^```[a-zA-Z]*\n?/, "")
-        .replace(/```$/, "")
-        .trim()
-    : trimmed;
-  try {
-    return JSON.parse(cleaned) as MiniMaxPreferencePayload;
-  } catch {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return JSON.parse(cleaned.slice(start, end + 1)) as MiniMaxPreferencePayload;
-    }
-    throw new Error("MiniMax preference response was not valid JSON");
-  }
 }
 
 function localFallback(args: {
@@ -133,7 +114,10 @@ export async function normalizeSubscriptionPreferences(args: {
       maxTokens: 900,
       temperature: 0.1,
     });
-    const parsed = parseJsonFromModelOutput(response.content);
+    const parsed = parseJsonObjectFromModelOutput<MiniMaxPreferencePayload>(
+      response.content,
+      "MiniMax preference response",
+    );
     const keywords = dedupeTerms(
       [...args.keywords, ...dedupeTerms(parsed.keywords, 30)],
       40,
