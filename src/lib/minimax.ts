@@ -19,7 +19,8 @@ export interface MiniMaxChatResponse {
 }
 
 const DEFAULT_MINIMAX_API_BASE_URL = "https://api.minimaxi.com";
-const DEFAULT_MINIMAX_MODEL = "MiniMax-M2.7-highspeed";
+const DEFAULT_MINIMAX_MODEL = "MiniMax-M2.7";
+const FALLBACK_MINIMAX_MODEL = "MiniMax-M2.7";
 
 function readLocalEnvValue(name: string) {
   if (process.env.NODE_ENV === "production") return null;
@@ -77,19 +78,23 @@ function getMiniMaxChatCompletionsEndpoint() {
     : `${baseUrl}/v1/chat/completions`;
 }
 
+function shouldRetryWithFallbackModel(model: string, status: number, message: string) {
+  if (model === FALLBACK_MINIMAX_MODEL) return false;
+  if (!/highspeed/i.test(model)) return false;
+  return status === 400 || /not support model|2061/i.test(message);
+}
+
 function normalizeMiniMaxTemperature(value: number | undefined) {
   if (value == null) return 1;
   if (!Number.isFinite(value)) return 1;
   return Math.min(1, Math.max(0.1, value));
 }
 
-export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxChatResponse> {
-  const apiKey = getMiniMaxApiKey();
-  if (!apiKey) {
-    throw new Error("Missing MINIMAX_API_KEY");
-  }
-
-  const model = getMiniMaxModel(req.model);
+async function callMiniMaxChatWithModel(
+  req: MiniMaxChatRequest,
+  apiKey: string,
+  model: string,
+): Promise<MiniMaxChatResponse> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
@@ -136,6 +141,9 @@ export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxC
       payload?.error?.message ||
       payload?.message ||
       `HTTP ${response.status}`;
+    if (shouldRetryWithFallbackModel(model, response.status, msg)) {
+      return callMiniMaxChatWithModel(req, apiKey, FALLBACK_MINIMAX_MODEL);
+    }
     throw new Error(`MiniMax request failed: ${msg}`);
   }
 
@@ -150,4 +158,13 @@ export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxC
     outputTokens: payload?.usage?.completion_tokens ?? payload?.usage?.total_tokens,
     model,
   };
+}
+
+export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxChatResponse> {
+  const apiKey = getMiniMaxApiKey();
+  if (!apiKey) {
+    throw new Error("Missing MINIMAX_API_KEY");
+  }
+
+  return callMiniMaxChatWithModel(req, apiKey, getMiniMaxModel(req.model));
 }

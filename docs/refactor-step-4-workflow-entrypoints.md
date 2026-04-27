@@ -273,8 +273,11 @@ MiniMax normalization requires `MINIMAX_API_KEY` in the runtime environment.
 `MINIMAX_GROUP_ID`, `MINIMAX_MODEL`, and `MINIMAX_API_BASE_URL` are optional.
 The default MiniMax base URL is `https://api.minimaxi.com`, the request path is
 the OpenAI-compatible `/v1/chat/completions` endpoint, and the default model is
-`MiniMax-M2.7-highspeed`. When the key is missing, the app keeps working with
-local alias matching instead of failing the subscription save.
+`MiniMax-M2.7`, because regular Token Plan keys may not support
+`MiniMax-M2.7-highspeed`. When a configured highspeed model returns MiniMax
+error `2061`, the shared client retries once with `MiniMax-M2.7`. When the key
+is missing, the app keeps working with local alias matching instead of failing
+the subscription save.
 MiniMax's OpenAI-compatible endpoint rejects `temperature: 0`, so the shared
 client clamps temperature into the documented `(0.0, 1.0]` range.
 
