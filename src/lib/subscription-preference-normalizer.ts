@@ -59,6 +59,13 @@ function localFallback(args: {
   };
 }
 
+const SYSTEM_PROMPT = `
+You are a JSON-only biomedical preference normalizer.
+Return exactly one valid JSON object.
+Do not include markdown, code fences, explanations, thinking, or text before/after JSON.
+The first character of your answer must be { and the last character must be }.
+`.trim();
+
 function buildPrompt(args: { keywords: string[]; customJournals: string[] }) {
   return `
 You normalize biomedical subscription preferences for a medical literature recommendation system.
@@ -90,6 +97,20 @@ ${JSON.stringify(args.customJournals)}
 `.trim();
 }
 
+function logPreferenceParseDiagnostic(details: Record<string, unknown>) {
+  try {
+    console.error(
+      "[MiniMax preference parse diagnostic]",
+      JSON.stringify({
+        at: new Date().toISOString(),
+        ...details,
+      }),
+    );
+  } catch {
+    console.error("[MiniMax preference parse diagnostic]", details);
+  }
+}
+
 export async function normalizeSubscriptionPreferences(args: {
   keywords: string[];
   customJournals: string[];
@@ -109,16 +130,35 @@ export async function normalizeSubscriptionPreferences(args: {
   }
 
   try {
+    const userPrompt = buildPrompt(args);
     const response = await callMiniMaxChat({
       label: "subscription_preference_normalization",
-      userPrompt: buildPrompt(args),
-      maxTokens: 900,
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt,
+      maxTokens: 1200,
       temperature: 0.1,
     });
-    const parsed = parseJsonObjectFromModelOutput<MiniMaxPreferencePayload>(
-      response.content,
-      "MiniMax preference response",
-    );
+    let parsed: MiniMaxPreferencePayload;
+    try {
+      parsed = parseJsonObjectFromModelOutput<MiniMaxPreferencePayload>(
+        response.content,
+        "MiniMax preference response",
+      );
+    } catch (parseError) {
+      logPreferenceParseDiagnostic({
+        label: "subscription_preference_normalization",
+        model: response.model,
+        inputTokens: response.inputTokens ?? null,
+        outputTokens: response.outputTokens ?? null,
+        rawKeywords: args.keywords,
+        rawJournals: args.customJournals,
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt,
+        modelOutput: response.content,
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+      });
+      throw parseError;
+    }
     const keywords = dedupeTerms(
       [...args.keywords, ...dedupeTerms(parsed.keywords, 30)],
       40,

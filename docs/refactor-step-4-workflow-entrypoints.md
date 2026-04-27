@@ -288,6 +288,9 @@ enabled explicitly with `MINIMAX_REASONING_SPLIT=true`.
 MiniMax failures now emit a `[MiniMax diagnostic]` runtime log containing the
 request label, endpoint, model, prompt messages, HTTP status, finish reason,
 response payload, and error message. The API key is never logged.
+If MiniMax returns HTTP 200 but the preference normalizer cannot parse JSON, it
+emits `[MiniMax preference parse diagnostic]` with the raw model output,
+system/user prompt, raw keywords, raw journals, token usage, and parse error.
 
 ## Behavior Notes
 
