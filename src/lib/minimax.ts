@@ -18,7 +18,8 @@ export interface MiniMaxChatResponse {
   model: string;
 }
 
-const DEFAULT_MINIMAX_MODEL = "MiniMax-Text-01";
+const DEFAULT_MINIMAX_API_BASE_URL = "https://api.minimaxi.com";
+const DEFAULT_MINIMAX_MODEL = "MiniMax-M2.7-highspeed";
 
 function readLocalEnvValue(name: string) {
   if (process.env.NODE_ENV === "production") return null;
@@ -52,13 +53,43 @@ export function getMiniMaxGroupId() {
   return process.env.MINIMAX_GROUP_ID?.trim() || readLocalEnvValue("MINIMAX_GROUP_ID") || null;
 }
 
+export function getMiniMaxModel(model?: string) {
+  return (
+    model?.trim() ||
+    process.env.MINIMAX_MODEL?.trim() ||
+    readLocalEnvValue("MINIMAX_MODEL") ||
+    DEFAULT_MINIMAX_MODEL
+  );
+}
+
+function getMiniMaxApiBaseUrl() {
+  return (
+    process.env.MINIMAX_API_BASE_URL?.trim() ||
+    readLocalEnvValue("MINIMAX_API_BASE_URL") ||
+    DEFAULT_MINIMAX_API_BASE_URL
+  ).replace(/\/+$/, "");
+}
+
+function getMiniMaxChatCompletionsEndpoint() {
+  const baseUrl = getMiniMaxApiBaseUrl();
+  return baseUrl.endsWith("/v1")
+    ? `${baseUrl}/chat/completions`
+    : `${baseUrl}/v1/chat/completions`;
+}
+
+function normalizeMiniMaxTemperature(value: number | undefined) {
+  if (value == null) return 1;
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(1, Math.max(0.1, value));
+}
+
 export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxChatResponse> {
   const apiKey = getMiniMaxApiKey();
   if (!apiKey) {
     throw new Error("Missing MINIMAX_API_KEY");
   }
 
-  const model = req.model?.trim() || DEFAULT_MINIMAX_MODEL;
+  const model = getMiniMaxModel(req.model);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
@@ -75,14 +106,14 @@ export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxC
   }
   messages.push({ role: "user", content: req.userPrompt });
 
-  const response = await fetchWithTimeout("https://api.minimax.chat/v1/text/chatcompletion_v2", {
+  const response = await fetchWithTimeout(getMiniMaxChatCompletionsEndpoint(), {
     method: "POST",
     headers,
     body: JSON.stringify({
       model,
       messages,
-      temperature: req.temperature ?? 0.1,
-      max_tokens: req.maxTokens ?? 1600,
+      temperature: normalizeMiniMaxTemperature(req.temperature),
+      max_completion_tokens: req.maxTokens ?? 1600,
     }),
     cache: "no-store",
     label: "MiniMax chat",
@@ -92,13 +123,19 @@ export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxC
   const payload = (await response.json().catch(() => null)) as
     | {
         base_resp?: { status_msg?: string };
+        error?: { message?: string };
+        message?: string;
         choices?: Array<{ message?: { content?: string } }>;
         usage?: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number };
       }
     | null;
 
   if (!response.ok) {
-    const msg = payload?.base_resp?.status_msg || `HTTP ${response.status}`;
+    const msg =
+      payload?.base_resp?.status_msg ||
+      payload?.error?.message ||
+      payload?.message ||
+      `HTTP ${response.status}`;
     throw new Error(`MiniMax request failed: ${msg}`);
   }
 

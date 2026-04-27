@@ -29,7 +29,16 @@ function parseJsonFromModelOutput(text: string) {
         .replace(/```$/, "")
         .trim()
     : trimmed;
-  return JSON.parse(cleaned) as KeywordExpansionResult;
+  try {
+    return JSON.parse(cleaned) as KeywordExpansionResult;
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1)) as KeywordExpansionResult;
+    }
+    throw new Error("MiniMax keyword response was not valid JSON");
+  }
 }
 
 export async function callMiniMaxKeywordExpansion(prompt: string) {

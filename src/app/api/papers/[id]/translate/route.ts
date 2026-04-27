@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { callMiniMaxChat } from "@/lib/minimax";
+import { callMiniMaxChat, getMiniMaxModel } from "@/lib/minimax";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { createUserSupabaseClient } from "@/lib/supabase/user";
 import {
@@ -87,7 +87,7 @@ export async function POST(
 
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
-  let model = "MiniMax-Text-01";
+  let model = getMiniMaxModel();
   try {
     const result = await callMiniMaxChat({
       systemPrompt,

@@ -1,5 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
-import { callMiniMaxChat, getMiniMaxApiKey } from "@/lib/minimax";
+import { callMiniMaxChat, getMiniMaxApiKey, getMiniMaxModel } from "@/lib/minimax";
 import {
   enqueueMissingPlatformAnalysisJobs,
   getAiAnalysisPapersByIds,
@@ -11,7 +11,7 @@ import {
   type AiAnalysisPaperRow,
 } from "@/server/repositories/ai-analysis";
 
-const MODEL_NAME = "MiniMax-Text-01";
+const MODEL_NAME = getMiniMaxModel();
 const MAX_BATCH_SIZE = 20;
 const SYSTEM_PROMPT = `你是一位专业的医学翻译。请将以下英文医学论文摘要翻译为准确、流畅的中文。
 要求：

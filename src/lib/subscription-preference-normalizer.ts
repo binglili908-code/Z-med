@@ -47,7 +47,16 @@ function parseJsonFromModelOutput(text: string) {
         .replace(/```$/, "")
         .trim()
     : trimmed;
-  return JSON.parse(cleaned) as MiniMaxPreferencePayload;
+  try {
+    return JSON.parse(cleaned) as MiniMaxPreferencePayload;
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1)) as MiniMaxPreferencePayload;
+    }
+    throw new Error("MiniMax preference response was not valid JSON");
+  }
 }
 
 function localFallback(args: {
@@ -122,7 +131,7 @@ export async function normalizeSubscriptionPreferences(args: {
     const response = await callMiniMaxChat({
       userPrompt: buildPrompt(args),
       maxTokens: 900,
-      temperature: 0,
+      temperature: 0.1,
     });
     const parsed = parseJsonFromModelOutput(response.content);
     const keywords = dedupeTerms(

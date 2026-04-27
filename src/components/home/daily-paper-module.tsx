@@ -114,6 +114,10 @@ type SubscriptionNormalizationApiResponse = {
   scannedCount?: number;
   normalizedCount?: number;
   failedCount?: number;
+  results?: Array<{
+    status?: "normalized" | "failed";
+    error?: string | null;
+  }>;
 };
 
 type DailyPaperView = {
@@ -592,8 +596,16 @@ export function DailyPaperModule() {
         setSubscriptionNormalizationMessage(payload.error ?? "订阅偏好标准化失败");
         return;
       }
+      const failureReasons = Array.from(
+        new Set(
+          (payload.results ?? [])
+            .map((result) => result.error)
+            .filter((error): error is string => Boolean(error)),
+        ),
+      );
+      const failureText = failureReasons.length ? `原因：${failureReasons.slice(0, 2).join("；")}` : "";
       setSubscriptionNormalizationMessage(
-        `订阅偏好标准化完成：扫描 ${payload.scannedCount ?? 0} 个用户，成功 ${payload.normalizedCount ?? 0} 个，失败 ${payload.failedCount ?? 0} 个。`,
+        `订阅偏好标准化完成：扫描 ${payload.scannedCount ?? 0} 个用户，成功 ${payload.normalizedCount ?? 0} 个，失败 ${payload.failedCount ?? 0} 个。${failureText}`,
       );
     } catch {
       setSubscriptionNormalizationMessage("订阅偏好标准化请求失败");
