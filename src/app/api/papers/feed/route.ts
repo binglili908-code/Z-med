@@ -24,6 +24,7 @@ import {
   type ProfileSubscriptionStatus,
 } from "@/server/repositories/profiles";
 import type { FeedResponse } from "@/shared/contracts/papers";
+import { validateFeedResponse } from "@/shared/contracts/papers.schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -158,7 +159,7 @@ export async function GET(req: Request) {
         feed.paperRows.map((paper) => paper.id),
       );
 
-      return NextResponse.json({
+      const response = validateFeedResponse({
         papers: feed.paperRows.map((paper) => mapPaperToFeedPaper(paper, interactions)),
         total: feed.total,
         page: feed.page,
@@ -174,6 +175,7 @@ export async function GET(req: Request) {
         devBypassUserId: devBypassAuth ? userId : null,
         devBypassSeedEmail: devBypassAuth ? getDevBypassSeedEmail() : null,
       } satisfies FeedResponse);
+      return NextResponse.json(response);
     }
 
     const cutoffDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
@@ -190,7 +192,7 @@ export async function GET(req: Request) {
       paperRows.map((paper) => paper.id),
     );
 
-    return NextResponse.json({
+    const response = validateFeedResponse({
       papers: paperRows.map((paper) => mapPaperToFeedPaper(paper, interactions)),
       total,
       page,
@@ -202,6 +204,7 @@ export async function GET(req: Request) {
       devBypassUserId: devBypassAuth ? userId : null,
       devBypassSeedEmail: devBypassAuth ? getDevBypassSeedEmail() : null,
     } satisfies FeedResponse);
+    return NextResponse.json(response);
   } catch (error) {
     console.error("Feed error:", error);
     return NextResponse.json({ error: errorMessage(error) }, { status: 500 });

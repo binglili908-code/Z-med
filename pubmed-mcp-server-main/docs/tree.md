@@ -1,0 +1,294 @@
+# pubmed-mcp-server - Directory Structure
+
+Generated on: 2026-04-24 17:59:13
+
+```text
+pubmed-mcp-server/
+├── .agents/
+│   └── skills/
+│       ├── add-app-tool/
+│       │   └── SKILL.md
+│       ├── add-prompt/
+│       │   └── SKILL.md
+│       ├── add-resource/
+│       │   └── SKILL.md
+│       ├── add-service/
+│       │   └── SKILL.md
+│       ├── add-test/
+│       │   └── SKILL.md
+│       ├── add-tool/
+│       │   └── SKILL.md
+│       ├── api-auth/
+│       │   └── SKILL.md
+│       ├── api-config/
+│       │   └── SKILL.md
+│       ├── api-context/
+│       │   └── SKILL.md
+│       ├── api-errors/
+│       │   └── SKILL.md
+│       ├── api-linter/
+│       │   └── SKILL.md
+│       ├── api-services/
+│       │   ├── references/
+│       │   │   ├── graph.md
+│       │   │   ├── llm.md
+│       │   │   └── speech.md
+│       │   └── SKILL.md
+│       ├── api-testing/
+│       │   └── SKILL.md
+│       ├── api-utils/
+│       │   ├── references/
+│       │   │   ├── formatting.md
+│       │   │   ├── parsing.md
+│       │   │   └── security.md
+│       │   └── SKILL.md
+│       ├── api-workers/
+│       │   └── SKILL.md
+│       ├── changelog/
+│       │   └── SKILL.md
+│       ├── cloudflare/
+│       │   ├── building-mcp-server-on-cloudflare/
+│       │   │   ├── references/
+│       │   │   │   ├── examples.md
+│       │   │   │   ├── oauth-setup.md
+│       │   │   │   └── troubleshooting.md
+│       │   │   └── SKILL.md
+│       │   ├── workers-best-practices/
+│       │   │   ├── references/
+│       │   │   │   ├── review.md
+│       │   │   │   └── rules.md
+│       │   │   └── SKILL.md
+│       │   ├── wrangler/
+│       │   │   ├── references/
+│       │   │   │   └── service-commands.md
+│       │   │   └── SKILL.md
+│       │   └── SKILL.md
+│       ├── code-simplifier/
+│       │   └── SKILL.md
+│       ├── design-mcp-server/
+│       │   └── SKILL.md
+│       ├── field-test/
+│       │   └── SKILL.md
+│       ├── github-cli/
+│       │   └── SKILL.md
+│       ├── maintenance/
+│       │   └── SKILL.md
+│       ├── migrate-mcp-ts-template/
+│       │   └── SKILL.md
+│       ├── modelcontextprotocol/
+│       │   └── SKILL.md
+│       ├── polish-docs-meta/
+│       │   ├── references/
+│       │   │   ├── agent-protocol.md
+│       │   │   ├── package-meta.md
+│       │   │   ├── readme.md
+│       │   │   └── server-json.md
+│       │   └── SKILL.md
+│       ├── release-and-publish/
+│       │   └── SKILL.md
+│       ├── report-issue-framework/
+│       │   └── SKILL.md
+│       ├── report-issue-local/
+│       │   └── SKILL.md
+│       ├── security-pass/
+│       │   └── SKILL.md
+│       ├── setup/
+│       │   └── SKILL.md
+│       └── writing-humanizer/
+│           └── SKILL.md
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   └── FUNDING.yml
+├── .storage/
+├── .vscode/
+│   ├── extensions.json
+│   └── settings.json
+├── docs/
+│   ├── design.md
+│   └── mcpmed-pr-draft.md
+├── schemas/
+│   └── ncbi-dtd/
+│       ├── eInfo_020511.dtd
+│       ├── eLink_020511.dtd
+│       ├── ePost_020511.dtd
+│       ├── eSearch_020511.dtd
+│       ├── eSpell.dtd
+│       ├── eSummary_041029.dtd
+│       └── pubmed_250101.dtd
+├── scripts/
+│   ├── build-changelog.ts
+│   ├── build.ts
+│   ├── check-docs-sync.ts
+│   ├── check-skills-sync.ts
+│   ├── clean.ts
+│   ├── devcheck.ts
+│   ├── lint-mcp.ts
+│   └── tree.ts
+├── skills/
+│   ├── add-app-tool/
+│   │   └── SKILL.md
+│   ├── add-prompt/
+│   │   └── SKILL.md
+│   ├── add-resource/
+│   │   └── SKILL.md
+│   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-test/
+│   │   └── SKILL.md
+│   ├── add-tool/
+│   │   └── SKILL.md
+│   ├── api-auth/
+│   │   └── SKILL.md
+│   ├── api-config/
+│   │   └── SKILL.md
+│   ├── api-context/
+│   │   └── SKILL.md
+│   ├── api-errors/
+│   │   └── SKILL.md
+│   ├── api-linter/
+│   │   └── SKILL.md
+│   ├── api-services/
+│   │   ├── references/
+│   │   │   ├── graph.md
+│   │   │   ├── llm.md
+│   │   │   └── speech.md
+│   │   └── SKILL.md
+│   ├── api-testing/
+│   │   └── SKILL.md
+│   ├── api-utils/
+│   │   ├── references/
+│   │   │   ├── formatting.md
+│   │   │   ├── parsing.md
+│   │   │   └── security.md
+│   │   └── SKILL.md
+│   ├── api-workers/
+│   │   └── SKILL.md
+│   ├── design-mcp-server/
+│   │   └── SKILL.md
+│   ├── field-test/
+│   │   └── SKILL.md
+│   ├── maintenance/
+│   │   └── SKILL.md
+│   ├── migrate-mcp-ts-template/
+│   │   └── SKILL.md
+│   ├── polish-docs-meta/
+│   │   ├── references/
+│   │   │   ├── agent-protocol.md
+│   │   │   ├── package-meta.md
+│   │   │   ├── readme.md
+│   │   │   └── server-json.md
+│   │   └── SKILL.md
+│   ├── release-and-publish/
+│   │   └── SKILL.md
+│   ├── report-issue-framework/
+│   │   └── SKILL.md
+│   ├── report-issue-local/
+│   │   └── SKILL.md
+│   ├── security-pass/
+│   │   └── SKILL.md
+│   └── setup/
+│       └── SKILL.md
+├── src/
+│   ├── config/
+│   │   └── server-config.ts
+│   ├── mcp-server/
+│   │   ├── prompts/
+│   │   │   └── definitions/
+│   │   │       └── research-plan.prompt.ts
+│   │   ├── resources/
+│   │   │   └── definitions/
+│   │   │       └── database-info.resource.ts
+│   │   └── tools/
+│   │       └── definitions/
+│   │           ├── _concepts.ts
+│   │           ├── _schemas.ts
+│   │           ├── convert-ids.tool.ts
+│   │           ├── fetch-articles.tool.ts
+│   │           ├── fetch-fulltext.tool.ts
+│   │           ├── find-related.tool.ts
+│   │           ├── format-citations.tool.ts
+│   │           ├── lookup-citation.tool.ts
+│   │           ├── lookup-mesh.tool.ts
+│   │           ├── search-articles.tool.ts
+│   │           └── spell-check.tool.ts
+│   ├── services/
+│   │   ├── ncbi/
+│   │   │   ├── formatting/
+│   │   │   │   └── citation-formatter.ts
+│   │   │   ├── parsing/
+│   │   │   │   ├── article-parser.ts
+│   │   │   │   ├── esummary-parser.ts
+│   │   │   │   ├── pmc-article-parser.ts
+│   │   │   │   ├── pmc-xml-helpers.ts
+│   │   │   │   └── xml-helpers.ts
+│   │   │   ├── api-client.ts
+│   │   │   ├── ncbi-service.ts
+│   │   │   ├── request-queue.ts
+│   │   │   ├── response-handler.ts
+│   │   │   └── types.ts
+│   │   └── unpaywall/
+│   │       ├── types.ts
+│   │       └── unpaywall-service.ts
+│   └── index.ts
+├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
+│   ├── mcp-server/
+│   │   ├── prompts/
+│   │   │   └── definitions/
+│   │   │       └── research-plan.prompt.test.ts
+│   │   ├── resources/
+│   │   │   └── definitions/
+│   │   │       └── database-info.resource.test.ts
+│   │   └── tools/
+│   │       └── definitions/
+│   │           ├── convert-ids.tool.test.ts
+│   │           ├── fetch-articles.tool.test.ts
+│   │           ├── fetch-fulltext.tool.test.ts
+│   │           ├── find-related.tool.test.ts
+│   │           ├── format-citations.tool.test.ts
+│   │           ├── lookup-citation.tool.test.ts
+│   │           ├── lookup-mesh.tool.test.ts
+│   │           ├── search-articles.tool.test.ts
+│   │           └── spell-check.tool.test.ts
+│   ├── services/
+│   │   ├── ncbi/
+│   │   │   ├── formatting/
+│   │   │   │   └── citation-formatter.test.ts
+│   │   │   ├── parsing/
+│   │   │   │   ├── article-parser.test.ts
+│   │   │   │   ├── esummary-parser.test.ts
+│   │   │   │   ├── pmc-article-parser.test.ts
+│   │   │   │   └── xml-helpers.test.ts
+│   │   │   ├── api-client.test.ts
+│   │   │   ├── ncbi-service.test.ts
+│   │   │   ├── request-queue.test.ts
+│   │   │   └── response-handler.test.ts
+│   │   └── unpaywall/
+│   │       └── unpaywall-service.test.ts
+│   ├── tools/
+│   └── index.test.ts
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── AGENTS.md
+├── biome.json
+├── bun.lock
+├── bunfig.toml
+├── CHANGELOG.md
+├── CLAUDE.md
+├── devcheck.config.json
+├── Dockerfile
+├── LICENSE
+├── package.json
+├── README.md
+├── server.json
+├── tsconfig.build.json
+├── tsconfig.json
+└── vitest.config.ts
+```
+
+_Note: This tree excludes files and directories matched by .gitignore and default patterns._

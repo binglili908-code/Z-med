@@ -1,5 +1,6 @@
 import { callMiniMaxChat, getMiniMaxApiKey } from "@/lib/minimax";
 import { parseJsonObjectFromModelOutput } from "@/lib/model-json";
+import { assistPubmedKeywords } from "@/lib/pubmed-query-assist";
 import {
   expandSubscriptionTerms,
   normalizeMatchText,
@@ -167,18 +168,34 @@ export async function normalizeSubscriptionPreferences(args: {
       [...args.customJournals, ...dedupeTerms(parsed.journals, 20)],
       30,
     );
+    const pubmedAssist = await assistPubmedKeywords(keywords, {
+      maxTerms: 8,
+      maxMeshRecordsPerTerm: 2,
+      maxEntryTermsPerRecord: 8,
+    });
+    const assistedKeywords = pubmedAssist.keywords.length ? pubmedAssist.keywords : keywords;
 
     return {
-      keywords: expandSubscriptionTerms(keywords),
+      keywords: expandSubscriptionTerms(assistedKeywords),
       journals: expandSubscriptionTerms(journals),
       normalizedTerms: {
         source: "minimax",
         raw_keywords: args.keywords,
         raw_journals: args.customJournals,
         keywords,
+        assisted_keywords: assistedKeywords,
         journals,
         aliases: parsed.aliases ?? {},
         notes: parsed.notes ?? [],
+        pubmed_assist: {
+          corrected_terms: pubmedAssist.correctedTerms,
+          mesh_records: pubmedAssist.meshRecords.map((record) => ({
+            mesh_id: record.meshId,
+            name: record.name,
+            entry_terms: record.entryTerms,
+          })),
+          errors: pubmedAssist.errors,
+        },
         usage: {
           input_tokens: response.inputTokens ?? null,
           output_tokens: response.outputTokens ?? null,

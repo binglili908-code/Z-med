@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "env:check": "tsx src/scripts/check-env.ts",
+    "db:types": "tsx src/scripts/generate-supabase-types.ts",
     "db:export-contracts": "node src/scripts/export-db-contracts.mjs",
     "seed:journals": "npx tsx src/scripts/seed.ts",
     "seed:topics": "npx tsx src/scripts/seed-topics.ts"
@@ -18,7 +20,8 @@
     "next": "15.5.15",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "resend": "^6.12.2"
+    "resend": "^6.12.2",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^2.1.4",
@@ -29,6 +32,7 @@
     "autoprefixer": "^10.4.20",
     "eslint": "^8.57.0",
     "eslint-config-next": "15.5.15",
+    "msw": "^2.13.6",
     "pg": "^8.20.0",
     "postcss": "^8.5.12",
     "tailwindcss": "^3.4.17",
