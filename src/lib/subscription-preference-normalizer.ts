@@ -110,6 +110,7 @@ export async function normalizeSubscriptionPreferences(args: {
 
   try {
     const response = await callMiniMaxChat({
+      label: "subscription_preference_normalization",
       userPrompt: buildPrompt(args),
       maxTokens: 900,
       temperature: 0.1,

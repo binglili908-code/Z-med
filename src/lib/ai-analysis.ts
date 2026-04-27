@@ -26,6 +26,7 @@ async function callMiniMaxAnalysis(paper: AiAnalysisPaperRow) {
 摘要原文：${paper.abstract ?? "无摘要"}`;
 
   const response = await callMiniMaxChat({
+    label: "ai_analysis_abstract_translation",
     model: MODEL_NAME,
     systemPrompt: SYSTEM_PROMPT,
     userPrompt,
@@ -44,6 +45,7 @@ async function callMiniMaxTitle(title: string, journal: string | null) {
   const user = `期刊：${journal ?? "Unknown"}
 英文标题：${title}`;
   const res = await callMiniMaxChat({
+    label: "ai_analysis_title_translation",
     model: MODEL_NAME,
     systemPrompt: system,
     userPrompt: user,

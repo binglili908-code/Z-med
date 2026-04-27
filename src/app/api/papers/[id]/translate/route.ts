@@ -90,6 +90,7 @@ export async function POST(
   let model = getMiniMaxModel();
   try {
     const result = await callMiniMaxChat({
+      label: "manual_paper_translation",
       systemPrompt,
       userPrompt,
       temperature: 0.1,

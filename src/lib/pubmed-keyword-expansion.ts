@@ -27,6 +27,7 @@ export async function callMiniMaxKeywordExpansion(prompt: string) {
 
   try {
     const response = await callMiniMaxChat({
+      label: "pubmed_keyword_expansion",
       userPrompt: prompt,
       maxTokens: 500,
       temperature: 0.1,
