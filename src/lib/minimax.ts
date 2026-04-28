@@ -10,6 +10,7 @@ export interface MiniMaxChatRequest {
   temperature?: number;
   maxTokens?: number;
   label?: string;
+  reasoningSplit?: boolean;
 }
 
 export interface MiniMaxChatResponse {
@@ -274,6 +275,6 @@ export async function callMiniMaxChat(req: MiniMaxChatRequest): Promise<MiniMaxC
   }
 
   return callMiniMaxChatWithModel(req, apiKey, getMiniMaxModel(req.model), {
-    reasoningSplit: getMiniMaxReasoningSplit(),
+    reasoningSplit: req.reasoningSplit ?? getMiniMaxReasoningSplit(),
   });
 }

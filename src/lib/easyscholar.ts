@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { normalizeJournalKey } from "@/lib/journal-normalization";
 import {
   listActiveEasyScholarJournals,
   readEasyScholarCursor,
@@ -35,7 +36,7 @@ type QueryResult = {
   raw: Record<string, unknown> | null;
 };
 
-const EASY_SCHOLAR_ENDPOINT = "https://www.easyscholar.cc/open/getPublicationRank";
+const DEFAULT_EASY_SCHOLAR_ENDPOINT = "https://www.easyscholar.cc/open/getPublicationRank";
 const RATE_LIMIT_MS = 550;
 const REQUEST_TIMEOUT_MS = 12000;
 const BATCH_SIZE_DEFAULT = 30;
@@ -61,21 +62,13 @@ function toMaybeNumber(input: unknown) {
   return Number.isFinite(n) ? n : null;
 }
 
-function normalizeJournalName(input: string) {
-  return input
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function dedupeNames(names: string[]) {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const name of names) {
     const trimmed = name.trim();
     if (!trimmed) continue;
-    const key = normalizeJournalName(trimmed);
+    const key = normalizeJournalKey(trimmed);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(trimmed);
@@ -163,6 +156,7 @@ class EasyScholarLimiter {
 
 async function queryEasyScholarByName(args: {
   secretKey: string;
+  endpoint: string;
   publicationName: string;
   limiter: EasyScholarLimiter;
 }): Promise<QueryResult> {
@@ -170,7 +164,7 @@ async function queryEasyScholarByName(args: {
     secretKey: args.secretKey,
     publicationName: args.publicationName,
   });
-  const url = `${EASY_SCHOLAR_ENDPOINT}?${params.toString()}`;
+  const url = `${args.endpoint}?${params.toString()}`;
 
   let lastError: string | null = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -239,10 +233,13 @@ function getBatchByCursor(rows: EasyScholarJournalRow[], cursor: number, batchSi
 }
 
 export async function runEasyScholarSyncJob(options?: { batchSize?: number }) {
-  const secretKey = process.env.EASYSCHOLAR_SECRET_KEY?.trim();
+  const secretKey =
+    process.env.EASYSCHOLAR_API_KEY?.trim() ?? process.env.EASYSCHOLAR_SECRET_KEY?.trim();
   if (!secretKey) {
-    throw new Error("Missing EASYSCHOLAR_SECRET_KEY");
+    throw new Error("Missing EASYSCHOLAR_API_KEY or EASYSCHOLAR_SECRET_KEY");
   }
+  const endpoint =
+    process.env.EASYSCHOLAR_API_BASE_URL?.trim() || DEFAULT_EASY_SCHOLAR_ENDPOINT;
 
   const supabase = createServiceSupabaseClient();
   const batchSize = Math.max(1, Math.min(100, Number(options?.batchSize ?? BATCH_SIZE_DEFAULT)));
@@ -274,6 +271,7 @@ export async function runEasyScholarSyncJob(options?: { batchSize?: number }) {
     for (const name of names) {
       const result = await queryEasyScholarByName({
         secretKey,
+        endpoint,
         publicationName: name,
         limiter,
       });

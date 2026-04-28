@@ -29,7 +29,6 @@ import {
 import {
   buildPubmedQueryForKeyword,
   calculateAiMedScore,
-  getJournalTierAndWeight,
   getOrFlagKeyword,
   insertJournalSyncLog,
   loadActiveJournalNames,
@@ -40,11 +39,11 @@ import {
   loadProfileSubscriptionKeywordRows,
   loadTopJournalTerms,
   readBackfillMonthOffset,
+  resolveJournalQuality,
   saveLlmSynonyms,
   upsertKeywordSyncedPaper,
   writeBackfillMonthOffset,
   writeSyncStateValue,
-  type JournalTierWeightResult,
 } from "@/server/repositories/pubmed-sync";
 
 export async function runPubmedSyncJob() {
@@ -231,6 +230,7 @@ export async function runJournalSyncJob() {
 
 export async function runKeywordSyncJob() {
   const supabase = createServiceSupabaseClient();
+  const journalMap = await loadJournalQualityMap(supabase);
 
   const profiles = await loadProfileSubscriptionKeywordRows(supabase);
 
@@ -381,17 +381,14 @@ export async function runKeywordSyncJob() {
     const scoreObj = (scoreData ?? {}) as { score?: number | string; is_ai_med?: boolean };
     const aiScore = Number(scoreObj.score ?? 0);
 
-    const { data: journalInfoData } = await getJournalTierAndWeight(supabase, paper.journal ?? "");
-    const journalRow = (Array.isArray(journalInfoData) ? journalInfoData[0] : journalInfoData) as
-      | JournalTierWeightResult
-      | undefined;
+    const journalRow = resolveJournalQuality(paper, journalMap);
     const tier = (journalRow?.tier ?? "emerging") as "top" | "core" | "emerging";
     const isAiMed = Boolean(scoreObj.is_ai_med) && tier !== "emerging";
     const dynamic = computeDynamicQualityScore({
       aiMedScore: aiScore,
-      baseWeight: journalRow?.weight == null ? 0.5 : Number(journalRow.weight),
+      baseWeight: journalRow?.weight ?? 0.5,
       impactFactor: journalRow?.impact_factor ?? null,
-      jcrQuartile: journalRow?.jcr ?? null,
+      jcrQuartile: journalRow?.jcr_quartile ?? null,
       casZone: journalRow?.cas_zone ?? null,
     });
     const qualityScore = dynamic.qualityScore;

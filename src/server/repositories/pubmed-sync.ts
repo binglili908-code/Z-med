@@ -1,4 +1,5 @@
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { getJournalKeyCandidates } from "@/lib/journal-normalization";
 import { isMissingColumnError } from "@/server/repositories/schema-compat";
 
 type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "from" | "rpc">;
@@ -44,14 +45,6 @@ export type AiMedScoreResult = {
   score?: number | string;
 };
 
-export type JournalTierWeightResult = {
-  tier?: string;
-  weight?: number | string;
-  impact_factor?: number | string | null;
-  jcr?: string | null;
-  cas_zone?: string | null;
-};
-
 export type PaperTopicRelationRow = {
   paper_id: string;
   topic_id: string;
@@ -87,10 +80,6 @@ function normalizeToken(input: string) {
   return input.trim().toLowerCase();
 }
 
-function normalizeJournalKey(input: string) {
-  return input.trim().toLowerCase();
-}
-
 function dedupeTerms(terms: string[]) {
   return Array.from(new Set(terms.map((term) => normalizeToken(term)).filter(Boolean)));
 }
@@ -112,11 +101,13 @@ export async function loadJournalQualityMap(
   const exactByName = new Map<string, JournalQualityRow>();
   const byAlias = new Map<string, JournalQualityRow>();
   for (const row of data as JournalQualityRow[]) {
-    const canonical = normalizeJournalKey(row.journal_name);
-    if (canonical) exactByName.set(canonical, row);
+    for (const canonical of getJournalKeyCandidates(row.journal_name)) {
+      exactByName.set(canonical, row);
+    }
     for (const alias of row.aliases ?? []) {
-      const normalized = normalizeJournalKey(alias);
-      if (normalized) byAlias.set(normalized, row);
+      for (const normalized of getJournalKeyCandidates(alias)) {
+        byAlias.set(normalized, row);
+      }
     }
   }
 
@@ -167,9 +158,11 @@ export function resolveJournalQuality(
   input: { journal: string | null },
   matcher: JournalQualityMatcher,
 ) {
-  const journal = normalizeJournalKey(input.journal ?? "");
-  if (!journal) return null;
-  return matcher.exactByName.get(journal) ?? matcher.byAlias.get(journal) ?? null;
+  for (const journal of getJournalKeyCandidates(input.journal)) {
+    const matched = matcher.exactByName.get(journal) ?? matcher.byAlias.get(journal);
+    if (matched) return matched;
+  }
+  return null;
 }
 
 export async function loadActiveProfileKeywordRows(client: SupabaseDbClient) {
@@ -236,12 +229,6 @@ export async function calculateAiMedScore(
   return client.rpc("calculate_ai_med_score", {
     p_title: input.title,
     p_abstract: input.abstract,
-  });
-}
-
-export async function getJournalTierAndWeight(client: SupabaseDbClient, journal: string) {
-  return client.rpc("get_journal_tier_and_weight", {
-    p_journal: journal,
   });
 }
 

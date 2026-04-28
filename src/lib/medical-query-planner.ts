@@ -14,6 +14,7 @@ import {
   type PubmedAssistForMedicalQueryPlan,
 } from "@/lib/medical-query-plan";
 import { assistPubmedKeywords } from "@/lib/pubmed-query-assist";
+import { normalizeMatchText } from "@/lib/subscription-matching";
 
 type MiniMaxPlannerResponse = {
   content: string;
@@ -184,23 +185,29 @@ async function addPubmedAssistToPlan(
   cache: MedicalQueryCacheStore | null,
 ) {
   for (const group of plan.groups) {
-    if (!group.terms.length) continue;
+    if (group.role === "broad") continue;
+    const termsForAssist =
+      isDegradedPlan(plan) && group.name === "raw_input"
+        ? getDegradedRawPubmedAssistTerms(group.terms)
+        : group.terms;
+    if (!termsForAssist.length) continue;
     const options = {
-      maxTerms: Math.min(8, group.terms.length),
+      maxTerms: Math.min(8, termsForAssist.length),
       maxMeshRecordsPerTerm: 2,
       maxEntryTermsPerRecord: 8,
     };
     const assist = cache
       ? await getPubmedAssistWithAtomicCache({
-          terms: group.terms,
+          terms: termsForAssist,
           groupRole: group.role,
           language: plan.language,
           assistPubmed,
           cache,
           options,
         })
-      : await assistPubmed(group.terms, options);
-    mergePubmedAssistIntoGroup(group, assist);
+      : await assistPubmed(termsForAssist, options);
+    const filteredAssist = filterPubmedAssistForGroup(termsForAssist, assist);
+    mergePubmedAssistIntoGroup(group, filteredAssist);
     if (assist.errors.length) {
       plan.warnings.push(...assist.errors.map((error) => `pubmed_assist:${group.name}:${error}`));
     }
@@ -273,6 +280,83 @@ function isDegradedPlan(plan: MedicalQueryPlan) {
   return plan.warnings.some((warning) => warning.startsWith("degraded:"));
 }
 
+function meshRelevanceKey(input: string) {
+  return normalizeMatchText(input);
+}
+
+function sortedMeshTokenKey(input: string) {
+  return meshRelevanceKey(input).split(/\s+/).filter(Boolean).sort().join(" ");
+}
+
+function meshRecordValues(record: PubmedAssistForMedicalQueryPlan["meshRecords"][number]) {
+  return [record.name, ...record.entryTerms];
+}
+
+function meshValueMatchesTerm(value: string, term: string) {
+  const valueKey = meshRelevanceKey(value);
+  const termKey = meshRelevanceKey(term);
+  if (!valueKey || !termKey) return false;
+  if (valueKey === termKey) return true;
+  if (termKey.length <= 3) return false;
+  return sortedMeshTokenKey(value) === sortedMeshTokenKey(term);
+}
+
+function isRelevantMeshRecord(
+  record: PubmedAssistForMedicalQueryPlan["meshRecords"][number],
+  terms: string[],
+) {
+  return terms.some((term) =>
+    meshRecordValues(record).some((value) => meshValueMatchesTerm(value, term)),
+  );
+}
+
+function filterPubmedAssistForGroup(
+  terms: string[],
+  assist: PubmedAssistForMedicalQueryPlan,
+): PubmedAssistForMedicalQueryPlan {
+  const correctedTerms = assist.correctedTerms.filter((item) =>
+    meshValueMatchesTerm(item.original, item.corrected),
+  );
+  const relevantMeshRecords = assist.meshRecords.filter((record) =>
+    isRelevantMeshRecord(record, terms),
+  );
+
+  return {
+    keywords: dedupeMedicalTerms([
+      ...correctedTerms.map((item) => item.corrected),
+      ...relevantMeshRecords.flatMap((record) => [record.name, ...record.entryTerms]),
+    ]),
+    correctedTerms,
+    meshRecords: relevantMeshRecords,
+    errors: assist.errors,
+  };
+}
+
+function hasCjk(input: string) {
+  return /[\u4e00-\u9fff]/.test(input);
+}
+
+function isSafeDegradedAssistTerm(input: string) {
+  const value = input.trim();
+  if (!value || hasCjk(value)) return false;
+  if (!/[a-z]/i.test(value)) return false;
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (!normalized || normalized === "ai" || normalized === "ml") return false;
+  return /[a-z]{4,}/i.test(normalized);
+}
+
+function getDegradedRawPubmedAssistTerms(terms: string[]) {
+  return dedupeMedicalTerms(
+    terms.flatMap((term) =>
+      term
+        .normalize("NFKC")
+        .split(/\s*(?:\+|,|;|，|、|\/|\band\b)\s*/i)
+        .filter(isSafeDegradedAssistTerm),
+    ),
+    8,
+  );
+}
+
 export async function planMedicalQuery(
   input: string[],
   dependencies: MedicalQueryPlannerDependencies = {},
@@ -310,8 +394,9 @@ export async function planMedicalQuery(
       label: "medical_query_planner",
       systemPrompt: SYSTEM_PROMPT,
       userPrompt: buildPlannerPrompt(rawInput),
-      maxTokens: 1800,
+      maxTokens: 5000,
       temperature: 0.1,
+      reasoningSplit: true,
     });
     const payload = parseMiniMaxMedicalQueryOutput(response.content);
     const plan = buildMedicalQueryPlanFromPayload({

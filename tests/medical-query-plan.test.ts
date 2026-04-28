@@ -412,3 +412,134 @@ test("returns a degraded plan when MiniMax output is not strict JSON", async () 
   assert.equal(plan.groups[0].name, "raw_input");
   assert.ok(plan.warnings.some((warning) => warning.includes("degraded:")));
 });
+
+test("degraded mixed AI and Chinese input does not call PubMed assist for broad raw text", async () => {
+  let pubmedCalls = 0;
+  const plan = await planMedicalQuery(["AI + 眼科"], {
+    callMiniMax: async () => ({
+      model: "test-minimax",
+      content: "not json",
+    }),
+    assistPubmed: async (terms) => {
+      pubmedCalls += 1;
+      return {
+        keywords: ["antagonists and inhibitors", ...terms],
+        correctedTerms: [],
+        meshRecords: [
+          {
+            meshId: "bad",
+            name: "antagonists  and  inhibitors",
+            entryTerms: ["antagonists"],
+          },
+        ],
+        errors: [],
+      };
+    },
+  });
+
+  assert.equal(pubmedCalls, 0);
+  assert.deepEqual(plan.groups[0].terms, ["AI + 眼科"]);
+  assert.deepEqual(plan.groups[0].meshHeadings, []);
+});
+
+test("does not expand broad groups with PubMed assist", async () => {
+  let pubmedCalls = 0;
+  const plan = await planMedicalQuery(["AI + 眼科"], {
+    callMiniMax: async () => ({
+      model: "test-minimax",
+      content: payload({
+        language: "mixed",
+        topic: "AI in ophthalmology",
+        method_terms: ["artificial intelligence"],
+        domain_terms: ["ophthalmology"],
+        broad_terms: ["AI", "eye"],
+      }),
+    }),
+    assistPubmed: async (terms) => {
+      pubmedCalls += 1;
+      return {
+        keywords: terms,
+        correctedTerms: [],
+        meshRecords: [],
+        errors: [],
+      };
+    },
+  });
+
+  const broadGroup = plan.groups.find((group) => group.name === "broad_terms");
+  assert.equal(pubmedCalls, 2);
+  assert.deepEqual(broadGroup?.terms, ["AI", "eye"]);
+  assert.deepEqual(broadGroup?.meshHeadings, []);
+});
+
+test("filters unrelated PubMed MeSH records before merging assist terms", async () => {
+  const plan = await planMedicalQuery(["眼科 OCT 血管"], {
+    callMiniMax: async () => ({
+      model: "test-minimax",
+      content: payload({
+        language: "zh",
+        topic: "ophthalmology imaging vascular",
+        domain_terms: ["ophthalmology", "vascular diseases"],
+        subtopics: ["OCT"],
+      }),
+    }),
+    assistPubmed: async (terms) => {
+      const text = terms.join(" ").toLowerCase();
+      if (text.includes("oct")) {
+        return {
+          keywords: ["OCT", "Octamer Transcription Factor-6"],
+          correctedTerms: [],
+          meshRecords: [
+            {
+              meshId: "bad-oct",
+              name: "Octamer Transcription Factor-6",
+              entryTerms: ["OCT-6 Transcription Factor"],
+            },
+          ],
+          errors: [],
+        };
+      }
+
+      return {
+        keywords: [
+          ...terms,
+          "Ophthalmology",
+          "Graves Ophthalmopathy",
+          "Vascular Diseases",
+          "Spinal Cord Vascular Diseases",
+        ],
+        correctedTerms: [],
+        meshRecords: [
+          {
+            meshId: "ok-eye",
+            name: "Ophthalmology",
+            entryTerms: [],
+          },
+          {
+            meshId: "bad-eye",
+            name: "Graves Ophthalmopathy",
+            entryTerms: [],
+          },
+          {
+            meshId: "ok-vascular",
+            name: "Vascular Diseases",
+            entryTerms: [],
+          },
+          {
+            meshId: "bad-vascular",
+            name: "Spinal Cord Vascular Diseases",
+            entryTerms: [],
+          },
+        ],
+        errors: [],
+      };
+    },
+  });
+
+  includesTerm(plan, "Ophthalmology");
+  includesTerm(plan, "Vascular Diseases");
+  const terms = normalized(allTerms(plan));
+  assert.equal(terms.includes("graves ophthalmopathy"), false);
+  assert.equal(terms.includes("spinal cord vascular diseases"), false);
+  assert.equal(terms.includes("octamer transcription factor-6"), false);
+});

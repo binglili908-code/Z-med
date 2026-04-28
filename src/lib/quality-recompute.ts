@@ -1,4 +1,5 @@
 import { computeDynamicQualityScore } from "@/lib/journal-score";
+import { getJournalKeyCandidates } from "@/lib/journal-normalization";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
   listQualityJournalRows,
@@ -17,10 +18,8 @@ type JournalMatcher = {
 
 const BATCH_SIZE_DEFAULT = 500;
 const BATCH_SIZE_MAX = 1000;
-
-function normalizeJournalKey(input: string) {
-  return input.trim().toLowerCase();
-}
+const CUTOFF_DAYS_DEFAULT = 183;
+const CUTOFF_DAYS_MAX = 3650;
 
 async function loadJournalMatcher(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
@@ -30,11 +29,13 @@ async function loadJournalMatcher(
   const exactByName = new Map<string, QualityJournalRow>();
   const byAlias = new Map<string, QualityJournalRow>();
   for (const row of data) {
-    const key = normalizeJournalKey(row.journal_name);
-    if (key) exactByName.set(key, row);
+    for (const key of getJournalKeyCandidates(row.journal_name)) {
+      exactByName.set(key, row);
+    }
     for (const alias of row.aliases ?? []) {
-      const aliasKey = normalizeJournalKey(alias);
-      if (aliasKey) byAlias.set(aliasKey, row);
+      for (const aliasKey of getJournalKeyCandidates(alias)) {
+        byAlias.set(aliasKey, row);
+      }
     }
   }
   return { exactByName, byAlias };
@@ -44,9 +45,11 @@ function resolveJournal(
   journalName: string | null,
   matcher: JournalMatcher,
 ): QualityJournalRow | null {
-  const key = normalizeJournalKey(journalName ?? "");
-  if (!key) return null;
-  return matcher.exactByName.get(key) ?? matcher.byAlias.get(key) ?? null;
+  for (const key of getJournalKeyCandidates(journalName)) {
+    const matched = matcher.exactByName.get(key) ?? matcher.byAlias.get(key);
+    if (matched) return matched;
+  }
+  return null;
 }
 
 function buildPayloadWithRecomputeMeta(args: {
@@ -70,17 +73,26 @@ function asFiniteNumber(value: unknown, fallback: number) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
+export async function runQualityRecomputeJob(options?: {
+  batchSize?: number;
+  cutoffDays?: number;
+}) {
   const supabase = createServiceSupabaseClient();
   const batchSize = Math.max(
     1,
     Math.min(BATCH_SIZE_MAX, Number(options?.batchSize ?? BATCH_SIZE_DEFAULT)),
   );
+  const cutoffDays = Math.max(
+    1,
+    Math.min(CUTOFF_DAYS_MAX, Number(options?.cutoffDays ?? CUTOFF_DAYS_DEFAULT)),
+  );
 
   const matcher = await loadJournalMatcher(supabase);
   const cursor = await readQualityRecomputeCursor(supabase);
 
-  const cutoffDate = new Date(Date.now() - 183 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const cutoffDate = new Date(Date.now() - cutoffDays * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
   const rows = await listQualityRecomputePaperBatch(supabase, {
     cutoffDate,
     cursor,
@@ -94,9 +106,12 @@ export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
         updatedCount: 0,
         unchangedCount: 0,
         failedCount: 0,
+        unmatchedJournalCount: 0,
+        unmatchedJournalSamples: [],
         cycleCompleted: true,
         resetCursor: true,
         cutoffDate,
+        cutoffDays,
         batchSize,
       };
     }
@@ -105,9 +120,12 @@ export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
       updatedCount: 0,
       unchangedCount: 0,
       failedCount: 0,
+      unmatchedJournalCount: 0,
+      unmatchedJournalSamples: [],
       cycleCompleted: false,
       resetCursor: false,
       cutoffDate,
+      cutoffDays,
       batchSize,
     };
   }
@@ -115,18 +133,34 @@ export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
   let updatedCount = 0;
   let unchangedCount = 0;
   let failedCount = 0;
+  let unmatchedJournalCount = 0;
+  const unmatchedJournalSamples: string[] = [];
 
   for (const row of rows) {
     const matched = resolveJournal(row.journal, matcher);
+    if (!matched) {
+      unmatchedJournalCount += 1;
+      const sample = (row.journal ?? "").trim();
+      if (
+        sample &&
+        !unmatchedJournalSamples.includes(sample) &&
+        unmatchedJournalSamples.length < 10
+      ) {
+        unmatchedJournalSamples.push(sample);
+      }
+      unchangedCount += 1;
+      continue;
+    }
+
     const dynamic = computeDynamicQualityScore({
       aiMedScore: asFiniteNumber(row.ai_med_score, 0),
-      baseWeight: matched?.weight ?? 0.5,
-      impactFactor: matched?.impact_factor ?? row.journal_if ?? null,
-      jcrQuartile: matched?.jcr_quartile ?? row.journal_jcr ?? null,
-      casZone: matched?.cas_zone ?? row.journal_cas_zone ?? null,
+      baseWeight: matched.weight ?? 0.5,
+      impactFactor: matched.impact_factor,
+      jcrQuartile: matched.jcr_quartile,
+      casZone: matched.cas_zone,
     });
 
-    const nextTier = (matched?.tier ?? "emerging").toLowerCase();
+    const nextTier = matched.tier.toLowerCase();
     const prevQuality = asFiniteNumber(row.quality_score, 0);
     const sameScore = Math.abs(prevQuality - dynamic.qualityScore) < 0.0001;
     const sameTier = (row.quality_tier ?? "emerging").toLowerCase() === nextTier;
@@ -171,11 +205,14 @@ export async function runQualityRecomputeJob(options?: { batchSize?: number }) {
     updatedCount,
     unchangedCount,
     failedCount,
+    unmatchedJournalCount,
+    unmatchedJournalSamples,
     cycleCompleted: false,
     resetCursor: false,
     startCursor: cursor || null,
     nextCursor: lastId || null,
     cutoffDate,
+    cutoffDays,
     batchSize,
   };
 }
