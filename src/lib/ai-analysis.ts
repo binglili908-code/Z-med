@@ -7,12 +7,14 @@ import {
   markAiAnalysisJobCompleted,
   markAiAnalysisJobFailed,
   markAiAnalysisJobProcessing,
+  recoverStalePlatformAnalysisJobs,
   updatePaperTranslations,
   type AiAnalysisPaperRow,
 } from "@/server/repositories/ai-analysis";
 
 const MODEL_NAME = getMiniMaxModel();
 const MAX_BATCH_SIZE = 20;
+const STALE_PROCESSING_MINUTES = 30;
 const SYSTEM_PROMPT = `你是一位专业的医学翻译。请将以下英文医学论文摘要翻译为准确、流畅的中文。
 要求：
 1. 专业术语使用标准中文医学翻译
@@ -63,6 +65,13 @@ export async function runAiAnalysisCronJob() {
   const supabase = createServiceSupabaseClient();
   const hasMiniMaxApiKey = Boolean(getMiniMaxApiKey());
   const { enqueuedCount } = await enqueueMissingPlatformAnalysisJobs(supabase);
+  const staleBeforeIso = new Date(
+    Date.now() - STALE_PROCESSING_MINUTES * 60 * 1000,
+  ).toISOString();
+  const { recoveredCount: recoveredStaleCount } = await recoverStalePlatformAnalysisJobs(
+    supabase,
+    { staleBeforeIso },
+  );
   const jobs = await listRunnablePlatformAnalysisJobs(supabase, {
     scanLimit: 100,
     batchSize: MAX_BATCH_SIZE,
@@ -71,6 +80,7 @@ export async function runAiAnalysisCronJob() {
   if (!jobs.length) {
     return {
       enqueuedCount,
+      recoveredStaleCount,
       processed: 0,
       completed: 0,
       failed: 0,
@@ -84,13 +94,20 @@ export async function runAiAnalysisCronJob() {
     supabase,
     jobs.map((job) => job.paper_id),
   );
+  let claimed = 0;
   let completed = 0;
   let failed = 0;
+  let skipped = 0;
   const failures: Array<{ queueId: string; paperId: string; error: string }> = [];
 
   for (const job of jobs) {
     const attemptsNow = (job.attempts ?? 0) + 1;
-    await markAiAnalysisJobProcessing(supabase, job.id);
+    const claimedJob = await markAiAnalysisJobProcessing(supabase, job.id, attemptsNow);
+    if (!claimedJob) {
+      skipped += 1;
+      continue;
+    }
+    claimed += 1;
 
     const paper = paperMap.get(job.paper_id);
     if (!paper) {
@@ -134,9 +151,11 @@ export async function runAiAnalysisCronJob() {
 
   return {
     enqueuedCount,
-    processed: jobs.length,
+    recoveredStaleCount,
+    processed: claimed,
     completed,
     failed,
+    skipped,
     model: MODEL_NAME,
     hasMiniMaxApiKey,
     hasTranslationApiKey: hasMiniMaxApiKey,

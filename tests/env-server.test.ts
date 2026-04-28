@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { EnvValidationError, validateServerEnv } from "../src/lib/env/server";
 
-function validEnv(overrides: Record<string, string | undefined> = {}) {
+function validEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   return {
     NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "publishable-key",
@@ -20,10 +20,16 @@ function validEnv(overrides: Record<string, string | undefined> = {}) {
     PERSONALIZED_FEED_MODE: "app",
     PUBMED_QUERY_ASSIST_ENABLED: "true",
     ...overrides,
+    NODE_ENV:
+      overrides.NODE_ENV === "development" ||
+      overrides.NODE_ENV === "production" ||
+      overrides.NODE_ENV === "test"
+        ? overrides.NODE_ENV
+        : "test",
   };
 }
 
-function getValidationIssues(env: Record<string, string | undefined>) {
+function getValidationIssues(env: NodeJS.ProcessEnv) {
   try {
     validateServerEnv(env);
   } catch (error) {

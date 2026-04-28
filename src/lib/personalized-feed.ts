@@ -25,7 +25,7 @@ function recentCutoffDate(days: number) {
 export function getPersonalizedFeedMode() {
   const mode = process.env.PERSONALIZED_FEED_MODE;
   if (mode === "app" || mode === "compare") return mode;
-  return "rpc";
+  return "app";
 }
 
 export async function getPersonalizedFeedInApp(args: {

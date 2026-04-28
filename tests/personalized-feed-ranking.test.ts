@@ -28,12 +28,13 @@ function profileStatus(
 }
 
 function paper(overrides: Partial<DbPaper> & Pick<DbPaper, "id" | "title">): DbPaper {
+  const { id, title, ...restOverrides } = overrides;
+
   return {
     abstract: null,
     abstract_zh: null,
     ai_analysis: null,
     ai_med_score: 0.8,
-    id: overrides.id,
     is_open_access: false,
     journal: "General Medicine",
     journal_cas_zone: null,
@@ -46,9 +47,10 @@ function paper(overrides: Partial<DbPaper> & Pick<DbPaper, "id" | "title">): DbP
     pubmed_url: "https://pubmed.ncbi.nlm.nih.gov/1/",
     quality_score: 80,
     quality_tier: "core",
-    title: overrides.title,
     title_zh: null,
-    ...overrides,
+    ...restOverrides,
+    id,
+    title,
   };
 }
 

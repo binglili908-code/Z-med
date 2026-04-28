@@ -159,6 +159,7 @@ test("feed route returns personalized papers for subscribed users", async () => 
         };
       },
       getPersonalizedFeedInApp: async (args) => {
+        assert.ok(args.subscriptionStatus);
         personalizedArgs = {
           userId: args.userId,
           page: args.page,

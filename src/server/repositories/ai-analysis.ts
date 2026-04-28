@@ -103,6 +103,29 @@ export async function listRunnablePlatformAnalysisJobs(
     .slice(0, params.batchSize);
 }
 
+export async function recoverStalePlatformAnalysisJobs(
+  client: SupabaseDbClient,
+  params: { staleBeforeIso: string },
+) {
+  const { data, error } = await client
+    .from("ai_analysis_queue")
+    .update({
+      status: "failed",
+      error_message: "Recovered stale processing job after worker timeout",
+      completed_at: null,
+    })
+    .eq("provider", "platform")
+    .is("user_id", null)
+    .eq("status", "processing")
+    .lt("updated_at", params.staleBeforeIso)
+    .select("id");
+  if (error) {
+    throw new Error(`Recover stale AI queue jobs failed: ${error.message}`);
+  }
+
+  return { recoveredCount: data?.length ?? 0 };
+}
+
 export async function getAiAnalysisPapersByIds(
   client: SupabaseDbClient,
   paperIds: string[],
@@ -123,14 +146,19 @@ export async function getAiAnalysisPapersByIds(
 export async function markAiAnalysisJobProcessing(
   client: SupabaseDbClient,
   queueId: string,
+  attempts: number,
 ) {
-  const { error } = await client
+  const { data, error } = await client
     .from("ai_analysis_queue")
-    .update({ status: "processing" })
-    .eq("id", queueId);
+    .update({ status: "processing", attempts, error_message: null, completed_at: null })
+    .eq("id", queueId)
+    .in("status", ["pending", "failed"])
+    .select("id")
+    .maybeSingle();
   if (error) {
     throw new Error(`Mark AI queue job processing failed: ${error.message}`);
   }
+  return Boolean(data);
 }
 
 export async function markAiAnalysisJobCompleted(

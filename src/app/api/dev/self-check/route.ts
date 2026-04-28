@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { authorizeDeveloperRequest } from "@/lib/dev-admin-auth";
+import { getPersonalizedFeedMode } from "@/lib/personalized-feed";
 import { getResendConfigStatus } from "@/lib/resend-email";
 import {
   getDevBypassSeedEmail,
@@ -63,6 +64,7 @@ export async function GET(req: Request) {
       resendConfigured,
       resendFromEmail: resendStatus.fromEmail,
       resendUsesTestingDomain: resendStatus.usesTestingDomain,
+      personalizedFeedMode: getPersonalizedFeedMode(),
       openAccessPaperCount: oaCount,
       samplePaperId: samplePaper?.id ?? null,
       samplePaperTitle: samplePaper?.title ?? null,
