@@ -253,27 +253,46 @@ const exactMatchEmptyPaper: DailyPaperView = {
 const defaultStrictMatchFallbackMessage =
   "\u672c\u5468\u6682\u672a\u627e\u5230\u540c\u65f6\u5339\u914d\u8ba2\u9605\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002\u4ee5\u4e0b\u662f\u4e0e\u60a8\u7684\u7814\u7a76\u65b9\u5411\u5f3a\u76f8\u5173\u7684\u9ad8\u8d28\u91cf\u6587\u732e\u3002";
 
+type SpotlightViewCache = {
+  paper: DailyPaperView;
+  items: DailyPaperView[];
+  requiresLogin: boolean;
+  hasSubscription: boolean;
+  devBypassAuth: boolean;
+  devBypassUserId: string | null;
+  devBypassSeedEmail: string | null;
+  strictMatchMessage: string | null;
+};
+
+let cachedSpotlightView: SpotlightViewCache | null = null;
+
 export function DailyPaperModule() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
 
-  const [paper, setPaper] = React.useState<DailyPaperView>(fallbackPaper);
-  const [items, setItems] = React.useState<DailyPaperView[]>([]);
+  const [paper, setPaper] = React.useState<DailyPaperView>(cachedSpotlightView?.paper ?? fallbackPaper);
+  const [items, setItems] = React.useState<DailyPaperView[]>(cachedSpotlightView?.items ?? []);
   const [browseEnabled, setBrowseEnabled] = React.useState(false);
   const [browseItems, setBrowseItems] = React.useState<DailyPaperView[]>([]);
   const [browsePage, setBrowsePage] = React.useState(1);
   const [browseTotalPages, setBrowseTotalPages] = React.useState(1);
   const [browseLoading, setBrowseLoading] = React.useState(false);
-  const [strictMatchMessage, setStrictMatchMessage] = React.useState<string | null>(null);
+  const [strictMatchMessage, setStrictMatchMessage] = React.useState<string | null>(
+    cachedSpotlightView?.strictMatchMessage ?? null,
+  );
   const [browseStrictMatchMessage, setBrowseStrictMatchMessage] = React.useState<string | null>(null);
-  const [requiresLogin, setRequiresLogin] = React.useState(false);
-  const [hasSubscription, setHasSubscription] = React.useState(false);
+  const [requiresLogin, setRequiresLogin] = React.useState(cachedSpotlightView?.requiresLogin ?? false);
+  const [hasSubscription, setHasSubscription] = React.useState(cachedSpotlightView?.hasSubscription ?? false);
   const [currentUserEmail, setCurrentUserEmail] = React.useState<string | null>(null);
-  const [devBypassAuth, setDevBypassAuth] = React.useState(false);
-  const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(null);
-  const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(null);
+  const [devBypassAuth, setDevBypassAuth] = React.useState(cachedSpotlightView?.devBypassAuth ?? false);
+  const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(
+    cachedSpotlightView?.devBypassUserId ?? null,
+  );
+  const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(
+    cachedSpotlightView?.devBypassSeedEmail ?? null,
+  );
   const [canTranslate, setCanTranslate] = React.useState(false);
   const [digestSendState, setDigestSendState] = React.useState<"idle" | "sending" | "sent" | "error">("idle");
   const [translateState, setTranslateState] = React.useState<Record<string, "idle" | "translating" | "done" | "error">>({});
@@ -340,25 +359,45 @@ export function DailyPaperModule() {
       });
       if (!res.ok) return;
       const json = (await res.json()) as FeedResponse;
-      setRequiresLogin(Boolean(json.requiresLogin));
-      setHasSubscription(Boolean(json.hasSubscription));
-      setDevBypassAuth(Boolean(json.devBypassAuth));
-      setDevBypassUserId(json.devBypassUserId ?? null);
-      setDevBypassSeedEmail(json.devBypassSeedEmail ?? null);
-      setStrictMatchMessage(
-        json.strictMatchFallback
-          ? (json.strictMatchMessage ?? defaultStrictMatchFallbackMessage)
-          : null,
-      );
+      const nextRequiresLogin = Boolean(json.requiresLogin);
+      const nextHasSubscription = Boolean(json.hasSubscription);
+      const nextDevBypassAuth = Boolean(json.devBypassAuth);
+      const nextDevBypassUserId = json.devBypassUserId ?? null;
+      const nextDevBypassSeedEmail = json.devBypassSeedEmail ?? null;
+      const nextStrictMatchMessage = json.strictMatchFallback
+        ? (json.strictMatchMessage ?? defaultStrictMatchFallbackMessage)
+        : null;
       const rows = (json.papers ?? []).map(toDailyPaperView);
+      const nextPaper = rows.length
+        ? rows[0]
+        : json.hasSubscription && !json.requiresLogin
+          ? exactMatchEmptyPaper
+          : fallbackPaper;
+      const nextItems = rows.slice(1);
+      cachedSpotlightView = {
+        paper: nextPaper,
+        items: nextItems,
+        requiresLogin: nextRequiresLogin,
+        hasSubscription: nextHasSubscription,
+        devBypassAuth: nextDevBypassAuth,
+        devBypassUserId: nextDevBypassUserId,
+        devBypassSeedEmail: nextDevBypassSeedEmail,
+        strictMatchMessage: nextStrictMatchMessage,
+      };
+      setRequiresLogin(nextRequiresLogin);
+      setHasSubscription(nextHasSubscription);
+      setDevBypassAuth(nextDevBypassAuth);
+      setDevBypassUserId(nextDevBypassUserId);
+      setDevBypassSeedEmail(nextDevBypassSeedEmail);
+      setStrictMatchMessage(nextStrictMatchMessage);
       if (rows.length) {
-        setPaper(rows[0]);
+        setPaper(nextPaper);
       } else if (json.hasSubscription && !json.requiresLogin) {
-        setPaper(exactMatchEmptyPaper);
+        setPaper(nextPaper);
       } else {
-        setPaper(fallbackPaper);
+        setPaper(nextPaper);
       }
-      setItems(rows.slice(1));
+      setItems(nextItems);
       setBrowseEnabled(false);
       setBrowseItems([]);
       setBrowseStrictMatchMessage(null);

@@ -29,6 +29,14 @@ type SearchResponse = {
   items: SearchPaper[];
 };
 
+type SearchCacheEntry = {
+  total: number;
+  items: SearchPaper[];
+};
+
+const searchResultCache = new Map<string, SearchCacheEntry>();
+const MAX_SEARCH_CACHE_ENTRIES = 20;
+
 function previewText(text: string | null, fallback = "暂无摘要") {
   const normalized = (text ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) return fallback;
@@ -117,6 +125,21 @@ function renderHighlightedText(text: string | null | undefined, terms: string[])
   });
 }
 
+function readSearchCache(params: URLSearchParams) {
+  return searchResultCache.get(params.toString()) ?? null;
+}
+
+function writeSearchCache(params: URLSearchParams, entry: SearchCacheEntry) {
+  const key = params.toString();
+  searchResultCache.delete(key);
+  searchResultCache.set(key, entry);
+  while (searchResultCache.size > MAX_SEARCH_CACHE_ENTRIES) {
+    const oldestKey = searchResultCache.keys().next().value;
+    if (!oldestKey) break;
+    searchResultCache.delete(oldestKey);
+  }
+}
+
 export function LiteratureSearchPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -128,6 +151,21 @@ export function LiteratureSearchPage() {
   const initialIfMin = (searchParams.get("ifMin") ?? "").trim();
   const initialIfMax = (searchParams.get("ifMax") ?? "").trim();
   const initialPage = Math.max(1, Number(searchParams.get("page") ?? "1") || 1);
+  const activeSearchParams = React.useMemo(
+    () =>
+      buildSearchParams({
+        q: initialQ,
+        tier: initialTier,
+        oaOnly: initialOa,
+        from: initialFrom,
+        to: initialTo,
+        ifMin: initialIfMin,
+        ifMax: initialIfMax,
+        page: initialPage,
+      }),
+    [initialFrom, initialIfMax, initialIfMin, initialOa, initialPage, initialQ, initialTier, initialTo],
+  );
+  const cachedInitialSearch = readSearchCache(activeSearchParams);
 
   const [query, setQuery] = React.useState(initialQ);
   const [tier, setTier] = React.useState(initialTier);
@@ -137,8 +175,8 @@ export function LiteratureSearchPage() {
   const [ifMin, setIfMin] = React.useState(initialIfMin);
   const [ifMax, setIfMax] = React.useState(initialIfMax);
   const [loading, setLoading] = React.useState(false);
-  const [total, setTotal] = React.useState(0);
-  const [items, setItems] = React.useState<SearchPaper[]>([]);
+  const [total, setTotal] = React.useState(cachedInitialSearch?.total ?? 0);
+  const [items, setItems] = React.useState<SearchPaper[]>(cachedInitialSearch?.items ?? []);
   const highlightTerms = React.useMemo(() => normalizeHighlightTerms(initialQ), [initialQ]);
   const ifRangeLabel = React.useMemo(
     () => formatIfRangeLabel(initialIfMin, initialIfMax),
@@ -160,43 +198,53 @@ export function LiteratureSearchPage() {
 
   React.useEffect(() => {
     const controller = new AbortController();
-    const params = buildSearchParams({
-      q: initialQ,
-      tier: initialTier,
-      oaOnly: initialOa,
-      from: initialFrom,
-      to: initialTo,
-      ifMin: initialIfMin,
-      ifMax: initialIfMax,
-      page: initialPage,
-    });
+    const cached = readSearchCache(activeSearchParams);
 
     async function load() {
-      setLoading(true);
+      if (cached) {
+        setItems(cached.items);
+        setTotal(cached.total);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
       try {
-        const res = await fetch(`/api/papers/search?${params.toString()}`, {
+        const res = await fetch(`/api/papers/search?${activeSearchParams.toString()}`, {
           cache: "no-store",
           signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
         if (!res.ok) {
-          setItems([]);
-          setTotal(0);
+          if (!cached) {
+            setItems([]);
+            setTotal(0);
+          }
           return;
         }
         const json = (await res.json()) as SearchResponse;
-        setItems(json.items ?? []);
-        setTotal(Number(json.total ?? 0));
+        const next = {
+          items: json.items ?? [],
+          total: Number(json.total ?? 0),
+        };
+        writeSearchCache(activeSearchParams, next);
+        setItems(next.items);
+        setTotal(next.total);
       } catch {
-        setItems([]);
-        setTotal(0);
+        if (controller.signal.aborted) return;
+        if (!cached) {
+          setItems([]);
+          setTotal(0);
+        }
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     }
 
     void load();
     return () => controller.abort();
-  }, [initialFrom, initialIfMax, initialIfMin, initialOa, initialPage, initialQ, initialTier, initialTo]);
+  }, [activeSearchParams]);
 
   const onSubmit = React.useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
@@ -244,31 +292,32 @@ export function LiteratureSearchPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-              <div className="flex flex-1 items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+            <div className="flex flex-col gap-3 xl:flex-row xl:flex-wrap xl:items-center">
+              <div className="flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 xl:min-w-[22rem] xl:flex-1">
                 <Search className="h-4 w-4 text-slate-400" />
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="输入标题、摘要、期刊、关键词或 MeSH 词"
-                  className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
+                  className="min-w-0 w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
                 />
               </div>
               <select
                 value={tier}
                 onChange={(event) => setTier(event.target.value)}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none"
+                className="h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none xl:w-40 xl:flex-none"
               >
                 <option value="">全部分层</option>
                 <option value="top">Top</option>
                 <option value="core">Core</option>
                 <option value="emerging">Emerging</option>
               </select>
-              <label className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-700">
+              <label className="flex h-12 w-full items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-700 xl:w-40 xl:flex-none">
                 <input
                   type="checkbox"
                   checked={oaOnly}
                   onChange={(event) => setOaOnly(event.target.checked)}
+                  className="shrink-0"
                 />
                 仅看开放获取
               </label>
@@ -279,7 +328,7 @@ export function LiteratureSearchPage() {
                 value={ifMin}
                 onChange={(event) => setIfMin(event.target.value)}
                 placeholder="最小 IF"
-                className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none"
+                className="h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none xl:w-36 xl:flex-none"
                 aria-label="最小 IF"
               />
               <input
@@ -289,33 +338,33 @@ export function LiteratureSearchPage() {
                 value={ifMax}
                 onChange={(event) => setIfMax(event.target.value)}
                 placeholder="最大 IF"
-                className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none"
+                className="h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none xl:w-36 xl:flex-none"
                 aria-label="最大 IF"
               />
               <input
                 type="date"
                 value={fromDate}
                 onChange={(event) => setFromDate(event.target.value)}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none"
+                className="h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none xl:w-48 xl:flex-none"
                 aria-label="开始日期"
               />
               <input
                 type="date"
                 value={toDate}
                 onChange={(event) => setToDate(event.target.value)}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none"
+                className="h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none xl:w-48 xl:flex-none"
                 aria-label="结束日期"
               />
               <button
                 type="submit"
-                className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
+                className="h-12 w-full rounded-xl bg-slate-900 px-5 text-sm font-semibold text-white hover:bg-slate-800 xl:w-24 xl:flex-none"
               >
                 搜索
               </button>
             </div>
           </form>
 
-          <div className="mt-6 flex items-center justify-between text-sm text-slate-500">
+          <div className="mt-6 flex flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:justify-between">
             <div>共找到 {total} 篇结果</div>
             <div>{hasActiveFilters ? "当前筛选条件已完整保留，可翻页后继续调整。" : "支持从首页输入关键词直接跳转到这里继续检索"}</div>
           </div>
