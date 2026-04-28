@@ -31,13 +31,15 @@ type SpotlightSelection = {
   reason: string;
 };
 
+const PRECISION_SPOTLIGHT_TARGET = 5;
+const SPOTLIGHT_TOTAL_TARGET = 7;
 const STRICT_MATCH_REASON =
   "\u4e0e\u60a8\u7684\u671f\u520a\u8ba2\u9605\u548c\u5173\u952e\u8bcd\u504f\u597d\u540c\u65f6\u5339\u914d";
 const TRENDING_REASON = "\u5168\u5c40\u9ad8\u8d28\u91cf\u70ed\u70b9\u6587\u732e";
-const TOPIC_FALLBACK_REASON =
-  "\u672c\u5468\u6682\u65e0\u540c\u65f6\u5339\u914d\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\uff1b\u4ee5\u4e0b\u4e3a\u7814\u7a76\u65b9\u5411\u5f3a\u76f8\u5173\u6587\u732e";
-const TOPIC_FALLBACK_MESSAGE =
-  "\u672c\u5468\u6682\u672a\u627e\u5230\u540c\u65f6\u5339\u914d\u8ba2\u9605\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002\u4ee5\u4e0b\u662f\u4e0e\u60a8\u7684\u7814\u7a76\u65b9\u5411\u5f3a\u76f8\u5173\u7684\u9ad8\u8d28\u91cf\u6587\u732e\u3002";
+const SERENDIPITY_REASON =
+  "\u7cbe\u51c6\u547d\u4e2d\u6587\u732e\u4e0d\u8db3\u65f6\u8865\u5145\u7684\u4ea4\u53c9\u65b9\u5411\u53c2\u8003\u6587\u732e";
+const PRECISION_SHORTAGE_MESSAGE =
+  "\u672c\u5468\u4e0e\u60a8\u7814\u7a76\u9886\u57df\u7cbe\u51c6\u547d\u4e2d\u6587\u732e\u4e0d\u8db35\u7bc7\uff0c\u5df2\u8865\u5145\u76f8\u5173\u4ea4\u53c9\u65b9\u5411\u6587\u732e\u3002";
 const RECENT_HIGH_SCORE_REASON = "\u8fd1 30 \u5929\u9ad8\u5206\u6587\u732e";
 
 function includesAnyKeyword(paper: DbPaper, keywords: string[]) {
@@ -76,6 +78,104 @@ export function buildGlobalSpotlightSelection(
       source_type: "trending" as const,
       reason: index === 0 ? TRENDING_REASON : RECENT_HIGH_SCORE_REASON,
     }));
+}
+
+function sortByQualityThenDate(scored: ScoredSpotlightPaper[]) {
+  return [...scored].sort((a, b) => {
+    const qualityDiff =
+      Number(b.paper.quality_score ?? 0) - Number(a.paper.quality_score ?? 0);
+    if (qualityDiff !== 0) return qualityDiff;
+    return String(b.paper.publication_date ?? "").localeCompare(
+      String(a.paper.publication_date ?? ""),
+    );
+  });
+}
+
+function sortByRelevanceThenQuality(scored: ScoredSpotlightPaper[]) {
+  return [...scored].sort((a, b) => {
+    const relevanceDiff = b.relevanceScore - a.relevanceScore;
+    if (relevanceDiff !== 0) return relevanceDiff;
+    const qualityDiff =
+      Number(b.paper.quality_score ?? 0) - Number(a.paper.quality_score ?? 0);
+    if (qualityDiff !== 0) return qualityDiff;
+    return String(b.paper.publication_date ?? "").localeCompare(
+      String(a.paper.publication_date ?? ""),
+    );
+  });
+}
+
+export function buildPersonalizedSpotlightSelection(args: {
+  scored: ScoredSpotlightPaper[];
+  requiresJournalMatch: boolean;
+  requiresKeywordMatch: boolean;
+}) {
+  const matchesRequiredPreferenceGroups = (item: ScoredSpotlightPaper) => {
+    return (
+      (!args.requiresJournalMatch || item.journalMatch) &&
+      (!args.requiresKeywordMatch || item.keywordMatch)
+    );
+  };
+  const used = new Set<string>();
+  const choose = (candidates: ScoredSpotlightPaper[], count: number) => {
+    const picked: ScoredSpotlightPaper[] = [];
+    for (const item of candidates) {
+      if (picked.length >= count) break;
+      if (used.has(item.paper.id)) continue;
+      used.add(item.paper.id);
+      picked.push(item);
+    }
+    return picked;
+  };
+
+  const precisionPool = sortByRelevanceThenQuality(
+    args.scored.filter(matchesRequiredPreferenceGroups),
+  );
+  const precision = choose(precisionPool, PRECISION_SPOTLIGHT_TARGET);
+  const precisionShortage = Math.max(0, PRECISION_SPOTLIGHT_TARGET - precision.length);
+  const trending = choose(sortByQualityThenDate(args.scored), 1);
+
+  const relatedCrossPool =
+    args.requiresJournalMatch && args.requiresKeywordMatch
+      ? sortByRelevanceThenQuality(
+          args.scored.filter((item) => !matchesRequiredPreferenceGroups(item) && item.keywordMatch),
+        )
+      : [];
+  const crossTarget = Math.max(0, SPOTLIGHT_TOTAL_TARGET - precision.length - trending.length);
+  const cross = choose(relatedCrossPool, crossTarget);
+  if (cross.length < crossTarget) {
+    cross.push(
+      ...choose(
+        sortByQualityThenDate(args.scored).filter((item) => !used.has(item.paper.id)),
+        crossTarget - cross.length,
+      ),
+    );
+  }
+
+  const spotlight: SpotlightSelection[] = [
+    ...precision.map((item) => ({
+      paper: item.paper,
+      source_type: "precision" as const,
+      reason: STRICT_MATCH_REASON,
+    })),
+    ...trending.map((item) => ({
+      paper: item.paper,
+      source_type: "trending" as const,
+      reason: TRENDING_REASON,
+    })),
+    ...cross.map((item) => ({
+      paper: item.paper,
+      source_type: "serendipity" as const,
+      reason: SERENDIPITY_REASON,
+    })),
+  ];
+
+  return {
+    spotlight,
+    exactMatchTotal: precision.length,
+    precisionShortage,
+    strictMatchFallback: precisionShortage > 0,
+    strictMatchMessage: precisionShortage > 0 ? PRECISION_SHORTAGE_MESSAGE : null,
+  };
 }
 
 export async function buildSpotlightPapers(params: {
@@ -142,49 +242,12 @@ export async function buildSpotlightPapers(params: {
     return { items, hasProfileConfig, strictMatchFallback: false, strictMatchMessage: null };
   }
 
-  const requiresJournalMatch = journalTerms.length > 0;
-  const requiresKeywordMatch = keywords.length > 0;
-  let strictMatchFallback = false;
-  let strictMatchMessage: string | null = null;
-  const matchesRequiredPreferenceGroups = (item: (typeof scored)[number]) => {
-    return (
-      (!requiresJournalMatch || item.journalMatch) &&
-      (!requiresKeywordMatch || item.keywordMatch)
-    );
-  };
-
-  const used = new Set<string>();
-  const choose = (candidates: typeof scored, count: number) => {
-    const picked: typeof scored = [];
-    for (const item of candidates) {
-      if (picked.length >= count) break;
-      if (used.has(item.paper.id)) continue;
-      used.add(item.paper.id);
-      picked.push(item);
-    }
-    return picked;
-  };
-
-  let relevantPool = scored
-    .filter(matchesRequiredPreferenceGroups)
-    .sort((a, b) => b.relevanceScore - a.relevanceScore);
-  if (!relevantPool.length && requiresJournalMatch && requiresKeywordMatch) {
-    const topicFallbackPool = scored
-      .filter((item) => item.keywordMatch)
-      .sort((a, b) => b.relevanceScore - a.relevanceScore);
-    if (topicFallbackPool.length) {
-      relevantPool = topicFallbackPool;
-      strictMatchFallback = true;
-      strictMatchMessage = TOPIC_FALLBACK_MESSAGE;
-    }
-  }
-  const relevant = choose(relevantPool, 5);
-
-  const spotlight = relevant.map((item) => ({
-    paper: item.paper,
-    source_type: strictMatchFallback ? ("serendipity" as const) : ("precision" as const),
-    reason: strictMatchFallback ? TOPIC_FALLBACK_REASON : STRICT_MATCH_REASON,
-  }));
+  const selection = buildPersonalizedSpotlightSelection({
+    scored,
+    requiresJournalMatch: journalTerms.length > 0,
+    requiresKeywordMatch: keywords.length > 0,
+  });
+  const { spotlight, exactMatchTotal, strictMatchFallback, strictMatchMessage } = selection;
 
   const interactions = await getPaperEmailInteractions(
     service,
@@ -200,5 +263,5 @@ export async function buildSpotlightPapers(params: {
     }),
   );
 
-  return { items, hasProfileConfig, strictMatchFallback, strictMatchMessage };
+  return { items, hasProfileConfig, exactMatchTotal, strictMatchFallback, strictMatchMessage };
 }

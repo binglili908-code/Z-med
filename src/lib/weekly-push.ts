@@ -2,9 +2,8 @@ import { startOfIsoWeek, toDateString } from "@/lib/iso-week";
 import { createResendEmailSender } from "@/lib/resend-email";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
+  buildWeeklyPushDigestSelection,
   diversifyWeeklyPushCandidates,
-  selectPersonalizedWeeklyPushPool,
-  selectTopicFallbackWeeklyPushPool,
   sortWeeklyPushCandidates,
 } from "@/lib/weekly-push-selection";
 import {
@@ -26,8 +25,10 @@ import {
 const DEFAULT_WEEKLY_PUSH_TARGET_COUNT = 7;
 const STRICT_WEEKLY_PUSH_REASON =
   "\u4e0e\u60a8\u7684\u671f\u520a\u8ba2\u9605\u548c\u5173\u952e\u8bcd\u504f\u597d\u540c\u65f6\u5339\u914d";
+const TRENDING_WEEKLY_PUSH_REASON =
+  "\u5168\u5c40\u9ad8\u8d28\u91cf\u70ed\u70b9\u6587\u732e";
 const TOPIC_FALLBACK_WEEKLY_PUSH_REASON =
-  "\u672c\u5468\u6682\u65e0\u66f4\u591a\u540c\u65f6\u5339\u914d\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\uff0c\u8fd9\u7bc7\u4e0e\u60a8\u7684\u7814\u7a76\u4e3b\u9898\u5f3a\u76f8\u5173";
+  "\u672c\u5468\u4e0e\u60a8\u7814\u7a76\u9886\u57df\u7cbe\u51c6\u547d\u4e2d\u6587\u732e\u4e0d\u8db35\u7bc7\uff0c\u8fd9\u7bc7\u662f\u8865\u5145\u7684\u4ea4\u53c9\u65b9\u5411\u53c2\u8003\u6587\u732e";
 
 function getWeeklyPushTargetCount() {
   const configured = Number(process.env.WEEKLY_PUSH_TARGET_COUNT ?? DEFAULT_WEEKLY_PUSH_TARGET_COUNT);
@@ -100,43 +101,26 @@ export async function runWeeklyPushJob() {
       continue;
     }
 
-    const exactCandidatesRaw = selectPersonalizedWeeklyPushPool(candidatePool, profile);
-    const topicFallbackCandidatesRaw = selectTopicFallbackWeeklyPushPool(candidatePool, profile);
-    if (!exactCandidatesRaw.length && !topicFallbackCandidatesRaw.length) {
-      skippedNoMatchUsers += 1;
-      continue;
-    }
-
-    const personalizedCandidateIds = Array.from(
-      new Set([
-        ...exactCandidatesRaw.map((paper) => paper.id),
-        ...topicFallbackCandidatesRaw.map((paper) => paper.id),
-      ]),
-    );
     const deliveredSet = await listDeliveredWeeklyPushPaperIds(supabase, {
       userId: profile.id,
-      paperIds: personalizedCandidateIds,
+      paperIds: candidatePool.map((paper) => paper.id),
     });
-    const exactCandidates = exactCandidatesRaw.filter(
-      (paper) => !deliveredSet.has(paper.id),
-    );
-    const exactSelected = diversifyWeeklyPushCandidates(exactCandidates, targetCount);
-    const selectedExactIds = new Set(exactSelected.map((paper) => paper.id));
-
-    const topicFallbackCandidates = topicFallbackCandidatesRaw.filter(
-      (paper) => !deliveredSet.has(paper.id) && !selectedExactIds.has(paper.id),
-    );
-    const topicFallbackSelected =
-      exactSelected.length < targetCount
-        ? diversifyWeeklyPushCandidates(topicFallbackCandidates, targetCount - exactSelected.length)
-        : [];
+    const selection = buildWeeklyPushDigestSelection(candidatePool, profile, {
+      targetCount,
+      deliveredPaperIds: deliveredSet,
+    });
     const personalized: WeeklyPushDigestPaper[] = [
-      ...exactSelected.map((paper) => ({
+      ...selection.exactSelected.map((paper) => ({
         ...paper,
         source_type: "precision" as const,
         recommendation_reason: STRICT_WEEKLY_PUSH_REASON,
       })),
-      ...topicFallbackSelected.map((paper) => ({
+      ...selection.trendingSelected.map((paper) => ({
+        ...paper,
+        source_type: "trending" as const,
+        recommendation_reason: TRENDING_WEEKLY_PUSH_REASON,
+      })),
+      ...selection.crossSelected.map((paper) => ({
         ...paper,
         source_type: "serendipity" as const,
         recommendation_reason: TOPIC_FALLBACK_WEEKLY_PUSH_REASON,
@@ -146,8 +130,10 @@ export async function runWeeklyPushJob() {
       skippedNoFreshPapersUsers += 1;
       continue;
     }
-    fallbackPaperCount += topicFallbackSelected.length;
-    const html = buildWeeklyPushDigestHtml(personalized);
+    fallbackPaperCount += selection.crossSelected.length;
+    const html = buildWeeklyPushDigestHtml(personalized, {
+      precisionShortage: selection.precisionShortage,
+    });
     try {
       await sendEmail({
         to,

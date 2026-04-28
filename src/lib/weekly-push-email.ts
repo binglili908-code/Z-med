@@ -2,8 +2,12 @@ import { cleanText, escapeHtml } from "@/lib/email-template-utils";
 import type { WeeklyPushCandidatePaper } from "@/server/repositories/weekly-push";
 
 export type WeeklyPushDigestPaper = WeeklyPushCandidatePaper & {
-  source_type?: "precision" | "serendipity";
+  source_type?: "precision" | "trending" | "serendipity";
   recommendation_reason?: string | null;
+};
+
+export type WeeklyPushDigestHtmlOptions = {
+  precisionShortage?: number;
 };
 
 function getBaseUrl() {
@@ -58,7 +62,8 @@ function buildPaperAbstractHtml(paper: WeeklyPushDigestPaper) {
 }
 
 function sourceTypeLabel(sourceType: WeeklyPushDigestPaper["source_type"]) {
-  if (sourceType === "serendipity") return "\u4e3b\u9898\u5907\u9009";
+  if (sourceType === "trending") return "\u5168\u5c40\u70ed\u70b9";
+  if (sourceType === "serendipity") return "\u4ea4\u53c9\u65b9\u5411";
   return "\u7cbe\u51c6\u5339\u914d";
 }
 
@@ -73,8 +78,15 @@ function buildMetaHtml(paper: WeeklyPushDigestPaper) {
   return `${journal} &middot; ${date}`;
 }
 
-export function buildWeeklyPushDigestHtml(papers: WeeklyPushDigestPaper[]) {
+export function buildWeeklyPushDigestHtml(
+  papers: WeeklyPushDigestPaper[],
+  options: WeeklyPushDigestHtmlOptions = {},
+) {
   const logoUrl = `${getBaseUrl()}/api/brand/logo`;
+  const shortageNotice =
+    (options.precisionShortage ?? 0) > 0
+      ? `<div style="font-size:13px;line-height:1.6;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin:0 0 14px 0;">\u672c\u5468\u4e0e\u60a8\u7814\u7a76\u9886\u57df\u7cbe\u51c6\u547d\u4e2d\u6587\u732e\u4e0d\u8db35\u7bc7\uff0c\u5df2\u6839\u636e\u7f3a\u5c11\u6570\u91cf\u8865\u5145\u4ea4\u53c9\u65b9\u5411\u6587\u732e\u3002</div>`
+      : "";
   const list = papers
     .map(
       (paper, index) => `
@@ -103,7 +115,8 @@ export function buildWeeklyPushDigestHtml(papers: WeeklyPushDigestPaper[]) {
         <div style="font-size:18px;font-weight:800;color:#0f172a;">Z-Lab \u533b\u5b66\u524d\u6cbf\u7cbe\u9009</div>
       </div>
       <h2 style="margin:0 0 8px 0;color:#0f172a;">\u672c\u5468 AI+\u533b\u5b66\u7cbe\u9009\u6587\u732e</h2>
-      <p style="color:#475569;margin:4px 0 16px 0;font-size:13px;">\u4ee5\u4e0b\u6587\u732e\u4f18\u5148\u5339\u914d\u60a8\u7684\u671f\u520a\u548c\u5173\u952e\u8bcd\u8ba2\u9605\u3002\u5982\u679c\u672c\u5468\u7cbe\u786e\u5339\u914d\u4e0d\u8db3\uff0c\u4f1a\u8865\u5145\u4e0e\u7814\u7a76\u65b9\u5411\u5f3a\u76f8\u5173\u7684\u4e3b\u9898\u5907\u9009\u3002</p>
+      <p style="color:#475569;margin:4px 0 16px 0;font-size:13px;">\u4ee5\u4e0b\u6587\u732e\u4f18\u5148\u63a8\u9001 5 \u7bc7\u7cbe\u51c6\u547d\u4e2d\u30011 \u7bc7\u5168\u5c40\u70ed\u70b9\u548c 1 \u7bc7\u4ea4\u53c9\u65b9\u5411\u6587\u732e\u3002</p>
+      ${shortageNotice}
       ${list}
       <div style="margin-top:16px;font-size:11px;color:#64748b;">\u5982\u9700\u8c03\u6574\u8ba2\u9605\u504f\u597d\uff0c\u8bf7\u524d\u5f80 Z-Lab \u8bbe\u7f6e\u9875\u9762\u3002</div>
     </div>

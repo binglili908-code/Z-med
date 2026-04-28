@@ -45,7 +45,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const { items, hasProfileConfig, strictMatchFallback, strictMatchMessage } =
+    const { items, hasProfileConfig, exactMatchTotal, strictMatchFallback, strictMatchMessage } =
       await buildSpotlightPapers({ userId, service });
     return NextResponse.json({
       papers: items,
@@ -53,7 +53,7 @@ export async function GET(req: Request) {
       requiresLogin: !userId && !isDevBypassAuthEnabled(),
       personalized: hasProfileConfig,
       hasSubscription: hasProfileConfig,
-      exactMatchTotal: strictMatchFallback ? 0 : items.length,
+      exactMatchTotal: exactMatchTotal ?? (strictMatchFallback ? 0 : items.length),
       strictMatchFallback,
       strictMatchMessage,
       fallbackType: strictMatchFallback ? "topic" : null,

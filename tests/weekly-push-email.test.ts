@@ -32,14 +32,33 @@ test("weekly push email shows English abstract when Chinese abstract is absent",
   assert.match(html, /Original English abstract\./);
 });
 
-test("weekly push email marks topic fallback papers clearly", () => {
+test("weekly push email marks cross-direction papers clearly", () => {
   const html = buildWeeklyPushDigestHtml([
     paper({
-      recommendation_reason: "Topic fallback",
+      recommendation_reason: "Cross direction",
       source_type: "serendipity",
     }),
   ]);
 
-  assert.match(html, /\u4e3b\u9898\u5907\u9009/);
-  assert.match(html, /Topic fallback/);
+  assert.match(html, /\u4ea4\u53c9\u65b9\u5411/);
+  assert.match(html, /Cross direction/);
+});
+
+test("weekly push email marks global trending papers clearly", () => {
+  const html = buildWeeklyPushDigestHtml([
+    paper({
+      recommendation_reason: "Global trending",
+      source_type: "trending",
+    }),
+  ]);
+
+  assert.match(html, /\u5168\u5c40\u70ed\u70b9/);
+  assert.match(html, /Global trending/);
+});
+
+test("weekly push email shows precision shortage notice", () => {
+  const html = buildWeeklyPushDigestHtml([paper()], { precisionShortage: 2 });
+
+  assert.match(html, /\u672c\u5468\u4e0e\u60a8\u7814\u7a76\u9886\u57df\u7cbe\u51c6\u547d\u4e2d\u6587\u732e\u4e0d\u8db35\u7bc7/);
+  assert.match(html, /\u4ea4\u53c9\u65b9\u5411/);
 });

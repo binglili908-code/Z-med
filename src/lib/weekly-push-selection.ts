@@ -10,6 +10,15 @@ import type {
   WeeklyPushProfileRow,
 } from "@/server/repositories/weekly-push";
 
+const WEEKLY_PRECISION_TARGET = 5;
+
+export type WeeklyPushDigestSelection = {
+  exactSelected: WeeklyPushCandidatePaper[];
+  trendingSelected: WeeklyPushCandidatePaper[];
+  crossSelected: WeeklyPushCandidatePaper[];
+  precisionShortage: number;
+};
+
 function normalizeTitle(title: string) {
   return title
     .toLowerCase()
@@ -167,4 +176,56 @@ export function selectTopicFallbackWeeklyPushPool(
     candidates.filter((paper) => matchKeyword(paper, keywords) && !matchJournal(paper, journals)),
     keywords,
   );
+}
+
+export function buildWeeklyPushDigestSelection(
+  candidates: WeeklyPushCandidatePaper[],
+  profile: WeeklyPushProfileRow,
+  options: {
+    targetCount: number;
+    deliveredPaperIds?: Set<string>;
+  },
+): WeeklyPushDigestSelection {
+  const deliveredPaperIds = options.deliveredPaperIds ?? new Set<string>();
+  const availableCandidates = candidates.filter((paper) => !deliveredPaperIds.has(paper.id));
+  const exactCandidates = selectPersonalizedWeeklyPushPool(availableCandidates, profile);
+  const exactSelected = diversifyWeeklyPushCandidates(
+    exactCandidates,
+    Math.min(WEEKLY_PRECISION_TARGET, options.targetCount),
+  );
+  const selectedIds = new Set(exactSelected.map((paper) => paper.id));
+  const precisionShortage = Math.max(0, WEEKLY_PRECISION_TARGET - exactSelected.length);
+
+  const trendingSelected = diversifyWeeklyPushCandidates(
+    sortWeeklyPushCandidates(availableCandidates.filter((paper) => !selectedIds.has(paper.id))),
+    exactSelected.length < options.targetCount ? 1 : 0,
+  );
+  for (const paper of trendingSelected) selectedIds.add(paper.id);
+
+  const topicFallbackCandidates = selectTopicFallbackWeeklyPushPool(
+    availableCandidates.filter((paper) => !selectedIds.has(paper.id)),
+    profile,
+  );
+  const crossTarget = Math.max(
+    0,
+    options.targetCount - exactSelected.length - trendingSelected.length,
+  );
+  const crossSelected = diversifyWeeklyPushCandidates(topicFallbackCandidates, crossTarget);
+  for (const paper of crossSelected) selectedIds.add(paper.id);
+
+  if (crossSelected.length < crossTarget) {
+    crossSelected.push(
+      ...diversifyWeeklyPushCandidates(
+        sortWeeklyPushCandidates(availableCandidates.filter((paper) => !selectedIds.has(paper.id))),
+        crossTarget - crossSelected.length,
+      ),
+    );
+  }
+
+  return {
+    exactSelected,
+    trendingSelected,
+    crossSelected,
+    precisionShortage,
+  };
 }

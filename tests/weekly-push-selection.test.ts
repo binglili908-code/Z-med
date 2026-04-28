@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildWeeklyPushDigestSelection,
   diversifyWeeklyPushCandidates,
   selectPersonalizedWeeklyPushPool,
   selectTopicFallbackWeeklyPushPool,
@@ -176,4 +177,58 @@ test("topic fallback does not use journal-only papers", () => {
   );
 
   assert.deepEqual(selected, []);
+});
+
+test("weekly digest selection fills precision shortage with trending and cross papers", () => {
+  const candidates = [
+    ...[1, 2, 3, 4].map((n) =>
+      paper({
+        id: `eye-${n}`,
+        title: `Diabetic retinopathy model ${n}`,
+        journal: `Eye Journal ${n}`,
+        quality_score: 0.9 - n * 0.01,
+      }),
+    ),
+    ...[1, 2, 3].map((n) =>
+      paper({
+        id: `global-${n}`,
+        title: `Global high quality ${n}`,
+        journal: `Global Journal ${n}`,
+        quality_score: 0.8 - n * 0.01,
+      }),
+    ),
+  ];
+
+  const selection = buildWeeklyPushDigestSelection(
+    candidates,
+    profile({ subscription_normalized_keywords: ["diabetic retinopathy"] }),
+    { targetCount: 7 },
+  );
+
+  assert.equal(selection.exactSelected.length, 4);
+  assert.equal(selection.trendingSelected.length, 1);
+  assert.equal(selection.crossSelected.length, 2);
+  assert.equal(selection.precisionShortage, 1);
+});
+
+test("weekly digest selection still fills seven papers when there are no precision matches", () => {
+  const candidates = Array.from({ length: 8 }, (_, index) =>
+    paper({
+      id: `global-${index + 1}`,
+      title: `Global paper ${index + 1}`,
+      journal: `Global Journal ${index + 1}`,
+      quality_score: 0.9 - index * 0.01,
+    }),
+  );
+
+  const selection = buildWeeklyPushDigestSelection(
+    candidates,
+    profile({ subscription_normalized_keywords: ["dermatology"] }),
+    { targetCount: 7 },
+  );
+
+  assert.equal(selection.exactSelected.length, 0);
+  assert.equal(selection.trendingSelected.length, 1);
+  assert.equal(selection.crossSelected.length, 6);
+  assert.equal(selection.precisionShortage, 5);
 });
