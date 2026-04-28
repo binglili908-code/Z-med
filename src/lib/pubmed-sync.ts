@@ -49,6 +49,40 @@ import {
   writeSyncStateValue,
 } from "@/server/repositories/pubmed-sync";
 
+export type KeywordSyncJobOptions = {
+  keywords?: string[];
+  keywordLimit?: number;
+  windows?: number[];
+  maxNewPmids?: number;
+};
+
+const DEFAULT_KEYWORD_SYNC_WINDOWS = [7, 30];
+const DEFAULT_KEYWORD_SYNC_MAX_NEW_PMIDS = 40;
+
+function cleanKeywordSyncSeed(input: string) {
+  const value = input.normalize("NFKC").replace(/\s+/g, " ").trim();
+  return value.length > 0 && value.length <= 120 ? value : "";
+}
+
+function normalizePositiveInteger(value: number | undefined, max: number) {
+  if (!Number.isFinite(value)) return null;
+  const rounded = Math.floor(value as number);
+  if (rounded <= 0) return null;
+  return Math.min(rounded, max);
+}
+
+function normalizeSyncWindows(input: number[] | undefined) {
+  const values = input?.length ? input : DEFAULT_KEYWORD_SYNC_WINDOWS;
+  const windows = Array.from(
+    new Set(
+      values
+        .map((value) => Math.floor(value))
+        .filter((value) => [7, 30].includes(value)),
+    ),
+  );
+  return windows.length ? windows : DEFAULT_KEYWORD_SYNC_WINDOWS;
+}
+
 export async function runPubmedSyncJob() {
   const supabase = createServiceSupabaseClient();
   const journalMap = await loadJournalQualityMap(supabase);
@@ -231,20 +265,29 @@ export async function runJournalSyncJob() {
   };
 }
 
-export async function runKeywordSyncJob() {
+export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
   const supabase = createServiceSupabaseClient();
   const journalMap = await loadJournalQualityMap(supabase);
 
-  const profiles = await loadProfileSubscriptionKeywordRows(supabase);
-
   const allKeywords = new Set<string>();
-  for (const keyword of toKeywordSyncSeedList(profiles)) {
-    const v = keyword.trim();
-    if (v) allKeywords.add(v);
+  if (options.keywords?.length) {
+    for (const keyword of options.keywords) {
+      const value = cleanKeywordSyncSeed(keyword);
+      if (value) allKeywords.add(value);
+    }
+  } else {
+    const profiles = await loadProfileSubscriptionKeywordRows(supabase);
+    for (const keyword of toKeywordSyncSeedList(profiles)) {
+      const value = cleanKeywordSyncSeed(keyword);
+      if (value) allKeywords.add(value);
+    }
   }
 
-  const keywordList = Array.from(allKeywords);
-  const syncWindows = [7, 30] as const;
+  const keywordLimit = normalizePositiveInteger(options.keywordLimit, 50);
+  const keywordList = Array.from(allKeywords).slice(0, keywordLimit ?? undefined);
+  const syncWindows = normalizeSyncWindows(options.windows);
+  const maxNewPmids =
+    normalizePositiveInteger(options.maxNewPmids, 200) ?? DEFAULT_KEYWORD_SYNC_MAX_NEW_PMIDS;
   if (!keywordList.length) {
     return {
       keywordCount: 0,
@@ -257,6 +300,14 @@ export async function runKeywordSyncJob() {
       estimatedTotalFound: 0,
       llmCalls: 0,
       plannerQueryCount: 0,
+      candidatePmidCount: 0,
+      newPmidCount: 0,
+      processedPmidCount: 0,
+      truncatedNewPmids: false,
+      options: {
+        keywordLimit: keywordLimit ?? null,
+        maxNewPmids,
+      },
       keywordStats: [] as Array<{
         keyword: string;
         found: number;
@@ -380,11 +431,20 @@ export async function runKeywordSyncJob() {
       ...stats.buildSummary(keywordList),
       llmCalls,
       plannerQueryCount,
+      candidatePmidCount: 0,
+      newPmidCount: 0,
+      processedPmidCount: 0,
+      truncatedNewPmids: false,
+      options: {
+        keywordLimit: keywordLimit ?? null,
+        maxNewPmids,
+      },
     };
   }
 
   const existing = await loadExistingPaperPmids(supabase, deduped);
   const newPmids = deduped.filter((id) => !existing.has(id));
+  const pmidsToProcess = newPmids.slice(0, maxNewPmids);
   if (!newPmids.length) {
     return {
       keywordCount: keywordList.length,
@@ -393,10 +453,18 @@ export async function runKeywordSyncJob() {
       ...stats.buildSummary(keywordList),
       llmCalls,
       plannerQueryCount,
+      candidatePmidCount: deduped.length,
+      newPmidCount: 0,
+      processedPmidCount: 0,
+      truncatedNewPmids: false,
+      options: {
+        keywordLimit: keywordLimit ?? null,
+        maxNewPmids,
+      },
     };
   }
 
-  const summaries = await loadPubmedSummariesByIds(newPmids);
+  const summaries = await loadPubmedSummariesByIds(pmidsToProcess);
   for (const paper of summaries) {
     const { data: scoreData, error: scoreErr } = await calculateAiMedScore(supabase, {
       title: paper.title,
@@ -470,5 +538,13 @@ export async function runKeywordSyncJob() {
     ...stats.buildSummary(keywordList),
     llmCalls,
     plannerQueryCount,
+    candidatePmidCount: deduped.length,
+    newPmidCount: newPmids.length,
+    processedPmidCount: pmidsToProcess.length,
+    truncatedNewPmids: pmidsToProcess.length < newPmids.length,
+    options: {
+      keywordLimit: keywordLimit ?? null,
+      maxNewPmids,
+    },
   };
 }
