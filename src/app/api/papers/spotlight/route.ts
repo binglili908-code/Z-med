@@ -12,6 +12,7 @@ import { findProfileIdByContactEmail } from "@/server/repositories/profiles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
