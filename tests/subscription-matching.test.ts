@@ -34,3 +34,17 @@ test("matches normalized English research terms in paper text", () => {
   assert.equal(textMatchesAnyTerm(text, expandSubscriptionTerms(["ICU"])), true);
   assert.equal(textMatchesAnyTerm(text, expandSubscriptionTerms(["dermatology"])), false);
 });
+
+test("expands Chinese ophthalmology preference to English eye disease terms", () => {
+  const terms = expandSubscriptionTerms(["\u773c\u79d1"]);
+
+  assert.ok(terms.includes("ophthalmology"));
+  assert.ok(terms.includes("diabetic retinopathy"));
+  assert.equal(
+    textMatchesAnyTerm(
+      buildSearchText(["Lesion Learning Network for Diabetic Retinopathy Grading."]),
+      terms,
+    ),
+    true,
+  );
+});

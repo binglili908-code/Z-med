@@ -43,6 +43,19 @@ const SUBSCRIPTION_ALIASES: Record<string, string[]> = {
     "vascular disease",
     "blood vessel",
   ],
+  "\u773c\u79d1": [
+    "ophthalmology",
+    "ophthalmological",
+    "ophthalmic",
+    "eye disease",
+    "eye diseases",
+    "retina",
+    "retinal",
+    "macular degeneration",
+    "diabetic retinopathy",
+    "glaucoma",
+    "cataract",
+  ],
 };
 
 const BROAD_TOPIC_TERMS = new Set([
