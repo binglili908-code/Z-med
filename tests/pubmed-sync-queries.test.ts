@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildPlannerKeywordPubmedQueries,
   buildQueryFromKeywords,
   buildUserPreferenceJournalQueries,
+  toKeywordSyncSeedList,
   toJournalList,
   toKeywordList,
   toPubmedSearchTerms,
 } from "../src/lib/pubmed-sync-queries";
+import type { MedicalQueryPlan } from "../src/lib/medical-query-plan";
 
 test("keeps PubMed-friendly normalized terms and drops compact mirror terms", () => {
   const terms = toPubmedSearchTerms([
@@ -104,4 +107,136 @@ test("broad keyword query uses title/abstract plus MeSH clauses", () => {
   assert.ok(query.includes('"vascular surgery"[tiab]'));
   assert.ok(query.includes('"vascular surgery"[mh]'));
   assert.ok(query.includes('"artificial intelligence"[Title/Abstract]'));
+});
+
+test("keyword sync seeds keep raw Chinese keywords for the dynamic planner", () => {
+  const keywords = toKeywordSyncSeedList([
+    {
+      subscription_keywords: ["眼科"],
+      subscription_mesh_terms: [],
+    },
+  ]);
+
+  assert.deepEqual(keywords, ["眼科"]);
+});
+
+test("keyword sync seeds prefer normalized PubMed terms when available", () => {
+  const keywords = toKeywordSyncSeedList([
+    {
+      subscription_keywords: ["眼科"],
+      subscription_mesh_terms: [],
+      subscription_normalized_keywords: ["ophthalmology", "eye disease"],
+    },
+  ]);
+
+  assert.deepEqual(keywords, ["ophthalmology", "eye disease"]);
+});
+
+test("planner keyword PubMed queries add an AI constraint for pure domain interests", () => {
+  const plan: MedicalQueryPlan = {
+    rawInput: ["眼科"],
+    topic: "ophthalmology",
+    language: "zh",
+    warnings: [],
+    groups: [
+      {
+        name: "domain_terms",
+        role: "domain",
+        terms: ["ophthalmology", "eye disease"],
+        meshHeadings: ["Ophthalmology", "Eye Diseases"],
+        entryTerms: ["ocular disease"],
+        strength: "required",
+      },
+    ],
+    intents: [
+      {
+        name: "default",
+        description: "AI ophthalmology papers.",
+        mustMatchGroupNames: ["domain_terms"],
+        optionalGroupNames: [],
+        pubmedQuery:
+          '("Ophthalmology"[Mesh] OR "Eye Diseases"[Mesh] OR "ophthalmology"[tiab])',
+      },
+    ],
+  };
+
+  const [query] = buildPlannerKeywordPubmedQueries(plan, 30);
+
+  assert.ok(query.includes('"artificial intelligence"[Title/Abstract]'));
+  assert.ok(query.includes('"Ophthalmology"[Mesh]'));
+  assert.ok(query.includes('"last 30 days"[EDat]'));
+  assert.ok(query.includes("hasabstract[text]"));
+});
+
+test("planner keyword PubMed queries do not duplicate AI constraints for method intents", () => {
+  const plan: MedicalQueryPlan = {
+    rawInput: ["AI + 眼科"],
+    topic: "AI ophthalmology",
+    language: "mixed",
+    warnings: [],
+    groups: [
+      {
+        name: "method_terms",
+        role: "method",
+        terms: ["artificial intelligence", "deep learning"],
+        meshHeadings: ["Artificial Intelligence", "Deep Learning"],
+        entryTerms: ["machine learning"],
+        strength: "required",
+      },
+      {
+        name: "domain_terms",
+        role: "domain",
+        terms: ["ophthalmology"],
+        meshHeadings: ["Ophthalmology"],
+        entryTerms: ["eye"],
+        strength: "required",
+      },
+    ],
+    intents: [
+      {
+        name: "ai_ophthalmology",
+        description: "AI ophthalmology papers.",
+        mustMatchGroupNames: ["method_terms", "domain_terms"],
+        optionalGroupNames: [],
+        pubmedQuery:
+          '("Artificial Intelligence"[Mesh] OR "Deep Learning"[Mesh]) AND ("Ophthalmology"[Mesh])',
+      },
+    ],
+  };
+
+  const [query] = buildPlannerKeywordPubmedQueries(plan, 7);
+
+  assert.equal(query.includes('"artificial intelligence"[Title/Abstract]'), false);
+  assert.ok(query.includes('"Artificial Intelligence"[Mesh]'));
+  assert.ok(query.includes('"last 7 days"[EDat]'));
+});
+
+test("planner keyword PubMed queries skip degraded plans", () => {
+  const plan: MedicalQueryPlan = {
+    rawInput: ["眼科"],
+    topic: null,
+    language: "unknown",
+    warnings: ["degraded:minimax_unavailable"],
+    groups: [
+      {
+        name: "raw_input",
+        role: "broad",
+        terms: ["眼科"],
+        meshHeadings: [],
+        entryTerms: [],
+        strength: "weak",
+      },
+    ],
+    intents: [
+      {
+        name: "degraded",
+        description: "",
+        mustMatchGroupNames: ["raw_input"],
+        optionalGroupNames: [],
+        pubmedQuery: '("眼科"[tiab])',
+      },
+    ],
+  };
+
+  assert.deepEqual(buildPlannerKeywordPubmedQueries(plan, 30), []);
 });

@@ -4,6 +4,7 @@ import {
   dedupeTerms,
   normalizeToken,
 } from "@/lib/pubmed-sync-rules";
+import type { MedicalQueryPlan } from "@/lib/medical-query-plan";
 
 type ProfileKeywordRow = {
   subscription_keywords?: string[] | null;
@@ -88,6 +89,40 @@ export function toKeywordList(rows: ProfileKeywordRow[]) {
       if (v) set.add(v);
     }
   }
+  return Array.from(set);
+}
+
+function normalizeKeywordSeed(input: string) {
+  const value = input.normalize("NFKC").replace(/\s+/g, " ").trim();
+  if (!value || value.length > 120) return "";
+  return normalizeToken(value);
+}
+
+export function toKeywordSyncSeedList(rows: ProfileKeywordRow[]) {
+  const set = new Set<string>();
+  for (const row of rows) {
+    const normalizedKeywords = Array.isArray(row.subscription_normalized_keywords)
+      ? row.subscription_normalized_keywords
+      : [];
+
+    if (normalizedKeywords.length) {
+      for (const keyword of toPubmedSearchTerms(normalizedKeywords, 80)) {
+        const value = normalizeKeywordSeed(keyword);
+        if (value) set.add(value);
+      }
+    } else {
+      for (const keyword of row.subscription_keywords ?? []) {
+        const value = normalizeKeywordSeed(keyword);
+        if (value) set.add(value);
+      }
+    }
+
+    for (const meshTerm of toPubmedSearchTerms(row.subscription_mesh_terms ?? [], 40)) {
+      const value = normalizeKeywordSeed(meshTerm);
+      if (value) set.add(value);
+    }
+  }
+
   return Array.from(set);
 }
 
@@ -202,6 +237,53 @@ export function buildUserPreferenceKeywordQueries(keywords: string[], daysBack =
     );
   }
   return queries;
+}
+
+function aiTitleAbstractClause() {
+  return dedupeTerms(AI_TERMS)
+    .map((term) => `${quotePubmedTerm(term)}[Title/Abstract]`)
+    .join(" OR ");
+}
+
+function hasRequiredMethodGroup(plan: MedicalQueryPlan, groupNames: string[]) {
+  return groupNames.some((name) => {
+    const group = plan.groups.find((item) => item.name === name);
+    return group?.role === "method";
+  });
+}
+
+function dedupePubmedQueries(queries: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const query of queries) {
+    const value = query.trim();
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+export function buildPlannerKeywordPubmedQueries(
+  plan: MedicalQueryPlan,
+  daysBack: number,
+) {
+  if (plan.warnings.some((warning) => warning.startsWith("degraded:"))) return [];
+
+  const queries: string[] = [];
+  for (const intent of plan.intents) {
+    if (!intent.pubmedQuery.trim()) continue;
+    const needsAiConstraint = !hasRequiredMethodGroup(plan, intent.mustMatchGroupNames);
+    const topicQuery = needsAiConstraint
+      ? `((${aiTitleAbstractClause()}) AND (${intent.pubmedQuery}))`
+      : `(${intent.pubmedQuery})`;
+    queries.push(
+      `${topicQuery} AND ("last ${daysBack} days"[EDat]) AND hasabstract[text]`,
+    );
+  }
+
+  return dedupePubmedQueries(queries).slice(0, 3);
 }
 
 export function formatPubmedDate(date: Date) {

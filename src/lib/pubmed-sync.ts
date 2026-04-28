@@ -1,6 +1,7 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { computeDynamicQualityScore } from "@/lib/journal-score";
 import { scoreAndUpsertPapers } from "@/lib/pubmed-paper-scoring";
+import { planMedicalQuery } from "@/lib/medical-query-planner";
 import {
   callMiniMaxKeywordExpansion,
   extractPubmedQueryText,
@@ -18,6 +19,7 @@ import {
   buildUserPreferenceJournalQueries,
   buildJournalWindowQuery,
   buildQueryFromKeywords,
+  buildPlannerKeywordPubmedQueries,
   buildRecentJournalQuery,
   buildTopJournalBackfillQuery,
   buildTopJournalQuery,
@@ -25,6 +27,7 @@ import {
   monthRangeByOffset,
   toJournalList,
   toKeywordList,
+  toKeywordSyncSeedList,
 } from "@/lib/pubmed-sync-queries";
 import {
   buildPubmedQueryForKeyword,
@@ -235,7 +238,7 @@ export async function runKeywordSyncJob() {
   const profiles = await loadProfileSubscriptionKeywordRows(supabase);
 
   const allKeywords = new Set<string>();
-  for (const keyword of toKeywordList(profiles)) {
+  for (const keyword of toKeywordSyncSeedList(profiles)) {
     const v = keyword.trim();
     if (v) allKeywords.add(v);
   }
@@ -252,6 +255,8 @@ export async function runKeywordSyncJob() {
       totalPassed: 0,
       totalDropped: 0,
       estimatedTotalFound: 0,
+      llmCalls: 0,
+      plannerQueryCount: 0,
       keywordStats: [] as Array<{
         keyword: string;
         found: number;
@@ -265,81 +270,101 @@ export async function runKeywordSyncJob() {
   }
 
   let llmCalls = 0;
+  let plannerQueryCount = 0;
   const stats = new KeywordSyncStats();
 
   for (const keyword of keywordList) {
     try {
-      let pubmedQuery = "";
+      const plannerQueriesByWindow = new Map<number, string[]>();
 
-      const { data: keywordFlagData } = await getOrFlagKeyword(supabase, keyword);
-      const flagRow = Array.isArray(keywordFlagData)
-        ? (keywordFlagData[0] as any)
-        : (keywordFlagData as any);
-      const status = typeof flagRow?.status === "string" ? flagRow.status : "unknown";
+      try {
+        const plan = await planMedicalQuery([keyword]);
+        for (const daysBack of syncWindows) {
+          const queries = buildPlannerKeywordPubmedQueries(plan, daysBack);
+          if (queries.length) {
+            plannerQueriesByWindow.set(daysBack, queries);
+            plannerQueryCount += queries.length;
+          }
+        }
+      } catch {
+        // Keep the legacy keyword expansion path as a fallback.
+      }
 
-      if (status === "cached") {
-        const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
-          keyword,
-          daysBack: 7,
-        });
-        if (!qErr) pubmedQuery = extractPubmedQueryText(queryData);
-      } else {
-        const prompt = typeof flagRow?.prompt === "string" ? flagRow.prompt : "";
-        const synonymData = prompt ? await callMiniMaxKeywordExpansion(prompt) : null;
-        if (synonymData?.synonyms?.length) {
-          llmCalls += 1;
-          const titleRequired = synonymData.title_required?.length
-            ? synonymData.title_required
-            : synonymData.synonyms;
-          const { error: saveErr } = await saveLlmSynonyms(supabase, {
-            keyword,
-            synonyms: synonymData.synonyms,
-            titleRequired,
-            pubmedQuery: synonymData.pubmed_query ?? null,
-          });
-          if (saveErr) {
-            await saveLlmSynonyms(supabase, {
+      const hasPlannerQueries = Array.from(plannerQueriesByWindow.values()).some(
+        (queries) => queries.length > 0,
+      );
+      let hasLegacyQuerySource = false;
+
+      if (!hasPlannerQueries) {
+        const { data: keywordFlagData } = await getOrFlagKeyword(supabase, keyword);
+        const flagRow = Array.isArray(keywordFlagData)
+          ? (keywordFlagData[0] as any)
+          : (keywordFlagData as any);
+        const status = typeof flagRow?.status === "string" ? flagRow.status : "unknown";
+
+        if (status === "cached") {
+          hasLegacyQuerySource = true;
+        } else {
+          const prompt = typeof flagRow?.prompt === "string" ? flagRow.prompt : "";
+          const synonymData = prompt ? await callMiniMaxKeywordExpansion(prompt) : null;
+          if (synonymData?.synonyms?.length) {
+            llmCalls += 1;
+            const titleRequired = synonymData.title_required?.length
+              ? synonymData.title_required
+              : synonymData.synonyms;
+            const { error: saveErr } = await saveLlmSynonyms(supabase, {
               keyword,
               synonyms: synonymData.synonyms,
               titleRequired,
+              pubmedQuery: synonymData.pubmed_query ?? null,
             });
+            if (saveErr) {
+              await saveLlmSynonyms(supabase, {
+                keyword,
+                synonyms: synonymData.synonyms,
+                titleRequired,
+              });
+            }
+            hasLegacyQuerySource = true;
           }
-          const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
-            keyword,
-            daysBack: 7,
-          });
-          if (!qErr) pubmedQuery = extractPubmedQueryText(queryData);
         }
       }
 
-      if (!pubmedQuery) continue;
+      if (!hasPlannerQueries && !hasLegacyQuerySource) continue;
 
       for (const daysBack of syncWindows) {
-        const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
-          keyword,
-          daysBack,
-        });
-        if (qErr) continue;
-        const windowQuery = extractPubmedQueryText(queryData);
-        if (!windowQuery) continue;
-        const result = await pubmedEsearchAll({
-          term: windowQuery,
-          pageSize: 100,
-          maxPages: daysBack <= 7 ? 6 : 10,
-          maxRecords: daysBack <= 7 ? 600 : 1000,
-        });
-        if (!result.ids.length) {
-          await randomDelay(280, 420);
-          continue;
+        let windowQueries = plannerQueriesByWindow.get(daysBack) ?? [];
+        if (!windowQueries.length) {
+          const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
+            keyword,
+            daysBack,
+          });
+          if (qErr) continue;
+          const legacyWindowQuery = extractPubmedQueryText(queryData);
+          windowQueries = legacyWindowQuery ? [legacyWindowQuery] : [];
         }
 
-        stats.recordSearchWindow({
-          keyword,
-          daysBack,
-          ids: result.ids,
-          totalCount: result.totalCount,
-        });
-        await randomDelay(280, 420);
+        for (const windowQuery of windowQueries) {
+          if (!windowQuery) continue;
+          const result = await pubmedEsearchAll({
+            term: windowQuery,
+            pageSize: 100,
+            maxPages: daysBack <= 7 ? 6 : 10,
+            maxRecords: daysBack <= 7 ? 600 : 1000,
+          });
+          if (!result.ids.length) {
+            await randomDelay(280, 420);
+            continue;
+          }
+
+          stats.recordSearchWindow({
+            keyword,
+            daysBack,
+            ids: result.ids,
+            totalCount: result.totalCount,
+          });
+          await randomDelay(280, 420);
+        }
       }
     } catch {
       continue;
@@ -354,6 +379,7 @@ export async function runKeywordSyncJob() {
       windows: syncWindows,
       ...stats.buildSummary(keywordList),
       llmCalls,
+      plannerQueryCount,
     };
   }
 
@@ -366,6 +392,7 @@ export async function runKeywordSyncJob() {
       windows: syncWindows,
       ...stats.buildSummary(keywordList),
       llmCalls,
+      plannerQueryCount,
     };
   }
 
@@ -442,5 +469,6 @@ export async function runKeywordSyncJob() {
     windows: syncWindows,
     ...stats.buildSummary(keywordList),
     llmCalls,
+    plannerQueryCount,
   };
 }
