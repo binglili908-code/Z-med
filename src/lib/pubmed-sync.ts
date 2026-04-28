@@ -19,6 +19,7 @@ import {
 import { KeywordSyncStats } from "@/lib/pubmed-keyword-sync-stats";
 import { loadPubmedSummariesByIds } from "@/lib/pubmed-summary-loader";
 import {
+  chunk,
   dedupeIdList,
   pubmedEsearch,
   pubmedEsearchAll,
@@ -69,10 +70,15 @@ export type KeywordSyncJobOptions = {
   maxNewPmids?: number;
   includeExisting?: boolean;
   includeDiagnostics?: boolean;
+  includeAbstracts?: boolean;
+  resolveOpenAccess?: boolean;
+  timeBudgetMs?: number;
 };
 
 const DEFAULT_KEYWORD_SYNC_WINDOWS = [7, 30];
 const DEFAULT_KEYWORD_SYNC_MAX_NEW_PMIDS = 40;
+const DEFAULT_KEYWORD_SYNC_TIME_BUDGET_MS = 45_000;
+const KEYWORD_SYNC_PROCESSING_BATCH_SIZE = 3;
 
 function cleanKeywordSyncSeed(input: string) {
   const value = input.normalize("NFKC").replace(/\s+/g, " ").trim();
@@ -96,6 +102,27 @@ function normalizeSyncWindows(input: number[] | undefined) {
     ),
   );
   return windows.length ? windows : DEFAULT_KEYWORD_SYNC_WINDOWS;
+}
+
+export function selectKeywordSyncPmids(args: {
+  dedupedPmids: string[];
+  existingPmids: Set<string>;
+  includeExisting?: boolean;
+  maxPmids: number;
+}) {
+  const newPmids = args.dedupedPmids.filter((id) => !args.existingPmids.has(id));
+  const refreshPmids = args.includeExisting
+    ? args.dedupedPmids.filter((id) => args.existingPmids.has(id))
+    : [];
+  const selectedPmids = args.includeExisting ? [...newPmids, ...refreshPmids] : newPmids;
+  const pmidsToProcess = selectedPmids.slice(0, args.maxPmids);
+
+  return {
+    newPmids,
+    selectedPmids,
+    pmidsToProcess,
+    truncated: pmidsToProcess.length < selectedPmids.length,
+  };
 }
 
 function bestDynamicContextScore(args: {
@@ -381,7 +408,24 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
   const syncWindows = normalizeSyncWindows(options.windows);
   const maxNewPmids =
     normalizePositiveInteger(options.maxNewPmids, 200) ?? DEFAULT_KEYWORD_SYNC_MAX_NEW_PMIDS;
+  const includeAbstracts = options.includeAbstracts ?? true;
+  const resolveOpenAccess = options.resolveOpenAccess ?? false;
+  const timeBudgetMs =
+    normalizePositiveInteger(options.timeBudgetMs, 240_000) ??
+    DEFAULT_KEYWORD_SYNC_TIME_BUDGET_MS;
+  const startedAt = Date.now();
+  const responseOptions = {
+    keywordLimit: keywordLimit ?? null,
+    maxNewPmids,
+    includeExisting: Boolean(options.includeExisting),
+    includeAbstracts,
+    resolveOpenAccess,
+    timeBudgetMs,
+  };
+  const isTimeBudgetExceeded = () => Date.now() - startedAt >= timeBudgetMs;
   const processedPaperDiagnostics: Array<Record<string, unknown>> = [];
+  let processedPmidCount = 0;
+  let stoppedEarlyDueToTimeBudget = false;
   if (!keywordList.length) {
     return {
       keywordCount: 0,
@@ -400,11 +444,9 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       selectedPmidCount: 0,
       processedPmidCount: 0,
       truncatedNewPmids: false,
-      options: {
-        keywordLimit: keywordLimit ?? null,
-        maxNewPmids,
-        includeExisting: Boolean(options.includeExisting),
-      },
+      stoppedEarlyDueToTimeBudget,
+      elapsedMs: Date.now() - startedAt,
+      options: responseOptions,
       processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
       keywordStats: [] as Array<{
         keyword: string;
@@ -537,19 +579,20 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       selectedPmidCount: 0,
       processedPmidCount: 0,
       truncatedNewPmids: false,
-      options: {
-        keywordLimit: keywordLimit ?? null,
-        maxNewPmids,
-        includeExisting: Boolean(options.includeExisting),
-      },
+      stoppedEarlyDueToTimeBudget,
+      elapsedMs: Date.now() - startedAt,
+      options: responseOptions,
       processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
     };
   }
 
   const existing = await loadExistingPaperPmids(supabase, deduped);
-  const newPmids = deduped.filter((id) => !existing.has(id));
-  const selectedPmids = options.includeExisting ? deduped : newPmids;
-  const pmidsToProcess = selectedPmids.slice(0, maxNewPmids);
+  const { newPmids, selectedPmids, pmidsToProcess, truncated } = selectKeywordSyncPmids({
+    dedupedPmids: deduped,
+    existingPmids: existing,
+    includeExisting: options.includeExisting,
+    maxPmids: maxNewPmids,
+  });
   if (!selectedPmids.length) {
     return {
       keywordCount: keywordList.length,
@@ -564,139 +607,163 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       selectedPmidCount: 0,
       processedPmidCount: 0,
       truncatedNewPmids: false,
-      options: {
-        keywordLimit: keywordLimit ?? null,
-        maxNewPmids,
-        includeExisting: Boolean(options.includeExisting),
-      },
+      stoppedEarlyDueToTimeBudget,
+      elapsedMs: Date.now() - startedAt,
+      options: responseOptions,
       processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
     };
   }
 
-  const summaries = await loadPubmedSummariesByIds(pmidsToProcess);
-  for (const paper of summaries) {
-    const { data: scoreData, error: scoreErr } = await calculateAiMedScore(supabase, {
-      title: paper.title,
-      abstract: paper.abstract ?? "",
-    });
-    if (scoreErr) {
-      continue;
+  for (const pmidGroup of chunk(pmidsToProcess, KEYWORD_SYNC_PROCESSING_BATCH_SIZE)) {
+    if (isTimeBudgetExceeded()) {
+      stoppedEarlyDueToTimeBudget = true;
+      break;
     }
-    const scoreObj = (scoreData ?? {}) as { score?: number | string; is_ai_med?: boolean };
-    const rpcIsAiMed = Boolean(scoreObj.is_ai_med);
-    const aiScore = Number(scoreObj.score ?? 0);
 
-    const journalRow = resolveJournalQuality(paper, journalMap);
-    const tier = (journalRow?.tier ?? "emerging") as "top" | "core" | "emerging";
-    const matchedKeywords = stats.getKeywordsForPmid(paper.pmid);
-    const dynamicContext = bestDynamicContextScore({
-      paper,
-      matchedKeywords,
-      plannerPlansByKeyword,
-      rpcScore: { isAiMed: rpcIsAiMed, score: aiScore },
+    const summaries = await loadPubmedSummariesByIds(pmidGroup, {
+      chunkSize: KEYWORD_SYNC_PROCESSING_BATCH_SIZE,
+      delayMinMs: 60,
+      delayMaxMs: 120,
+      includeAbstracts,
     });
-    const isAiMed = rpcIsAiMed || Boolean(dynamicContext?.eligible);
-    const aiScoreForRanking = Math.max(aiScore, dynamicContext?.score ?? 0);
-    const dynamic = computeDynamicQualityScore({
-      aiMedScore: aiScoreForRanking,
-      baseWeight: journalRow?.weight ?? 0.5,
-      impactFactor: journalRow?.impact_factor ?? null,
-      jcrQuartile: journalRow?.jcr_quartile ?? null,
-      casZone: journalRow?.cas_zone ?? null,
-    });
-    const qualityScore = dynamic.qualityScore;
-    const oa = await resolveOpenAccessByDoi(paper.doi);
+    processedPmidCount += summaries.length;
 
-    const topCoreEligible = tier !== "emerging";
-    const recommendationDropReasons = [
-      ...(!isAiMed ? ["ai_med_score_below_threshold"] : []),
-      ...(!isAiMed && !dynamicContext?.eligible ? ["dynamic_context_not_verified"] : []),
-    ];
-    const globalFeedExclusionReasons = [
-      ...(!topCoreEligible ? ["journal_not_top_or_core"] : []),
-    ];
-    const paperKeywords = buildKeywordSyncedPaperKeywords({
-      paperKeywords: paper.keywords,
-      matchedKeywords,
-      plannerPlansByKeyword,
-      dynamicContext,
-    });
-    const existingPayload =
-      paper.source_payload && typeof paper.source_payload === "object" ? paper.source_payload : {};
-    const sourcePayload = {
-      ...existingPayload,
-      keyword_sync: {
-        matched_keywords: matchedKeywords,
-        windows: syncWindows,
-        rpc_ai_med_score: aiScore,
-        ai_med_score: aiScoreForRanking,
-        rpc_is_ai_med: rpcIsAiMed,
-        dynamic_context: dynamicContext,
-        quality_tier: tier,
-        top_core_eligible: topCoreEligible,
-        recommendation_eligible: isAiMed,
-        recommendation_drop_reasons: recommendationDropReasons,
-        global_feed_exclusion_reasons: globalFeedExclusionReasons,
-        synced_at: new Date().toISOString(),
-      },
-    };
+    for (const paper of summaries) {
+      if (isTimeBudgetExceeded()) {
+        stoppedEarlyDueToTimeBudget = true;
+        break;
+      }
 
-    const upsertResult = await upsertKeywordSyncedPaper(supabase, {
-      pmid: paper.pmid,
-      doi: paper.doi ?? null,
-      title: paper.title,
-      abstract: paper.abstract,
-      journal: paper.journal,
-      publication_date: paper.publication_date,
-      pubmed_url: paper.pubmed_url,
-      authors: paper.authors,
-      mesh_terms: paper.mesh_terms,
-      keywords: paperKeywords,
-      is_open_access: oa.is_open_access,
-      oa_pdf_url: oa.oa_pdf_url,
-      ai_med_score: aiScoreForRanking,
-      is_ai_med: isAiMed,
-      quality_tier: tier,
-      quality_score: qualityScore,
-      journal_if: dynamic.impactFactor,
-      journal_jcr: dynamic.jcrQuartile,
-      journal_cas_zone: dynamic.casZone,
-      source_payload: sourcePayload,
-      fetched_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-    if (options.includeDiagnostics) {
-      processedPaperDiagnostics.push({
-        pmid: paper.pmid,
+      const { data: scoreData, error: scoreErr } = await calculateAiMedScore(supabase, {
         title: paper.title,
-        journal: paper.journal,
-        publicationDate: paper.publication_date,
-        aiMedScore: aiScore,
-        aiMedScoreForRanking: aiScoreForRanking,
-        rpcIsAiMed,
-        dynamicContext,
-        qualityTier: tier,
-        topCoreEligible,
-        recommendationEligible: isAiMed,
-        recommendationDropReasons,
-        globalFeedExclusionReasons,
+        abstract: paper.abstract ?? "",
       });
-    }
-    if (upsertResult.ok) {
-      stats.recordUpsert({ matchedKeywords, isAiMed });
-      for (const contextRow of recommendationContextRows({
-        pmid: paper.pmid,
+      if (scoreErr) {
+        continue;
+      }
+      const scoreObj = (scoreData ?? {}) as { score?: number | string; is_ai_med?: boolean };
+      const rpcIsAiMed = Boolean(scoreObj.is_ai_med);
+      const aiScore = Number(scoreObj.score ?? 0);
+
+      const journalRow = resolveJournalQuality(paper, journalMap);
+      const tier = (journalRow?.tier ?? "emerging") as "top" | "core" | "emerging";
+      const matchedKeywords = stats.getKeywordsForPmid(paper.pmid);
+      const dynamicContext = bestDynamicContextScore({
+        paper,
+        matchedKeywords,
+        plannerPlansByKeyword,
+        rpcScore: { isAiMed: rpcIsAiMed, score: aiScore },
+      });
+      const isAiMed = rpcIsAiMed || Boolean(dynamicContext?.eligible);
+      const aiScoreForRanking = Math.max(aiScore, dynamicContext?.score ?? 0);
+      const dynamic = computeDynamicQualityScore({
+        aiMedScore: aiScoreForRanking,
+        baseWeight: journalRow?.weight ?? 0.5,
+        impactFactor: journalRow?.impact_factor ?? null,
+        jcrQuartile: journalRow?.jcr_quartile ?? null,
+        casZone: journalRow?.cas_zone ?? null,
+      });
+      const qualityScore = dynamic.qualityScore;
+      const oa = resolveOpenAccess
+        ? await resolveOpenAccessByDoi(paper.doi)
+        : null;
+
+      const topCoreEligible = tier !== "emerging";
+      const recommendationDropReasons = [
+        ...(!isAiMed ? ["ai_med_score_below_threshold"] : []),
+        ...(!isAiMed && !dynamicContext?.eligible ? ["dynamic_context_not_verified"] : []),
+      ];
+      const globalFeedExclusionReasons = [
+        ...(!topCoreEligible ? ["journal_not_top_or_core"] : []),
+      ];
+      const paperKeywords = buildKeywordSyncedPaperKeywords({
+        paperKeywords: paper.keywords,
         matchedKeywords,
         plannerPlansByKeyword,
         dynamicContext,
-        rpcScore: { isAiMed: rpcIsAiMed, score: aiScore },
-        isRecommendationEligible: isAiMed,
-        qualityTier: tier,
-      })) {
-        await upsertPaperRecommendationContext(supabase, contextRow);
+      });
+      const existingPayload =
+        paper.source_payload && typeof paper.source_payload === "object" ? paper.source_payload : {};
+      const sourcePayload = {
+        ...existingPayload,
+        keyword_sync: {
+          matched_keywords: matchedKeywords,
+          windows: syncWindows,
+          rpc_ai_med_score: aiScore,
+          ai_med_score: aiScoreForRanking,
+          rpc_is_ai_med: rpcIsAiMed,
+          dynamic_context: dynamicContext,
+          quality_tier: tier,
+          top_core_eligible: topCoreEligible,
+          recommendation_eligible: isAiMed,
+          recommendation_drop_reasons: recommendationDropReasons,
+          global_feed_exclusion_reasons: globalFeedExclusionReasons,
+          open_access_resolved: Boolean(oa),
+          synced_at: new Date().toISOString(),
+        },
+      };
+
+      const upsertResult = await upsertKeywordSyncedPaper(supabase, {
+        pmid: paper.pmid,
+        doi: paper.doi ?? null,
+        title: paper.title,
+        abstract: paper.abstract,
+        journal: paper.journal,
+        publication_date: paper.publication_date,
+        pubmed_url: paper.pubmed_url,
+        authors: paper.authors,
+        mesh_terms: paper.mesh_terms,
+        keywords: paperKeywords,
+        ...(oa
+          ? {
+              is_open_access: oa.is_open_access,
+              oa_pdf_url: oa.oa_pdf_url,
+            }
+          : {}),
+        ai_med_score: aiScoreForRanking,
+        is_ai_med: isAiMed,
+        quality_tier: tier,
+        quality_score: qualityScore,
+        journal_if: dynamic.impactFactor,
+        journal_jcr: dynamic.jcrQuartile,
+        journal_cas_zone: dynamic.casZone,
+        source_payload: sourcePayload,
+        fetched_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      if (options.includeDiagnostics) {
+        processedPaperDiagnostics.push({
+          pmid: paper.pmid,
+          title: paper.title,
+          journal: paper.journal,
+          publicationDate: paper.publication_date,
+          aiMedScore: aiScore,
+          aiMedScoreForRanking: aiScoreForRanking,
+          rpcIsAiMed,
+          dynamicContext,
+          qualityTier: tier,
+          topCoreEligible,
+          recommendationEligible: isAiMed,
+          recommendationDropReasons,
+          globalFeedExclusionReasons,
+        });
       }
+      if (upsertResult.ok) {
+        stats.recordUpsert({ matchedKeywords, isAiMed });
+        for (const contextRow of recommendationContextRows({
+          pmid: paper.pmid,
+          matchedKeywords,
+          plannerPlansByKeyword,
+          dynamicContext,
+          rpcScore: { isAiMed: rpcIsAiMed, score: aiScore },
+          isRecommendationEligible: isAiMed,
+          qualityTier: tier,
+        })) {
+          await upsertPaperRecommendationContext(supabase, contextRow);
+        }
+      }
+      await randomDelay(resolveOpenAccess ? 120 : 40, resolveOpenAccess ? 220 : 80);
     }
-    await randomDelay(120, 220);
   }
 
   return {
@@ -710,13 +777,11 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
     existingCandidatePmidCount: existing.size,
     newPmidCount: newPmids.length,
     selectedPmidCount: selectedPmids.length,
-    processedPmidCount: pmidsToProcess.length,
-    truncatedNewPmids: pmidsToProcess.length < selectedPmids.length,
-    options: {
-      keywordLimit: keywordLimit ?? null,
-      maxNewPmids,
-      includeExisting: Boolean(options.includeExisting),
-    },
+    processedPmidCount,
+    truncatedNewPmids: truncated || stoppedEarlyDueToTimeBudget,
+    stoppedEarlyDueToTimeBudget,
+    elapsedMs: Date.now() - startedAt,
+    options: responseOptions,
     processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
   };
 }

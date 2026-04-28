@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildWeeklyPushCandidatePools,
   buildWeeklyPushDigestSelection,
   diversifyWeeklyPushCandidates,
   selectPersonalizedWeeklyPushPool,
@@ -27,6 +28,7 @@ function paper(
     pubmed_url: "https://pubmed.ncbi.nlm.nih.gov/1/",
     quality_score: 0.8,
     quality_tier: "core",
+    source_payload: null,
     title_zh: null,
     ...overrides,
   };
@@ -231,4 +233,87 @@ test("weekly digest selection still fills seven papers when there are no precisi
   assert.equal(selection.trendingSelected.length, 1);
   assert.equal(selection.crossSelected.length, 6);
   assert.equal(selection.precisionShortage, 5);
+});
+
+test("weekly candidate pools keep dynamic precision papers out of fallback candidates", () => {
+  const pools = buildWeeklyPushCandidatePools([
+    paper({
+      id: "dynamic-eye",
+      title: "Machine learning in ophthalmology",
+      keywords: ["ophthalmology", "machine learning"],
+      quality_score: 0.45,
+      quality_tier: "emerging",
+      source_payload: {
+        keyword_sync: {
+          recommendation_eligible: true,
+          dynamic_context: { eligible: true },
+        },
+      },
+    }),
+    paper({
+      id: "low-general",
+      title: "General low quality AI paper",
+      quality_score: 0.45,
+      quality_tier: "emerging",
+    }),
+    paper({
+      id: "high-global",
+      title: "High quality global paper",
+      quality_score: 0.82,
+      quality_tier: "core",
+    }),
+  ]);
+
+  assert.deepEqual(
+    pools.precisionCandidates.map((item) => item.id),
+    ["high-global", "dynamic-eye"],
+  );
+  assert.deepEqual(
+    pools.fallbackCandidates.map((item) => item.id),
+    ["high-global"],
+  );
+  assert.equal(pools.dynamicPrecisionCandidateCount, 1);
+});
+
+test("weekly digest uses dynamic precision candidates only for exact matches", () => {
+  const dynamicEye = paper({
+    id: "dynamic-eye",
+    title: "Machine learning in ophthalmology",
+    keywords: ["ophthalmology", "machine learning"],
+    quality_score: 0.45,
+    quality_tier: "emerging",
+    source_payload: {
+      keyword_sync: {
+        recommendation_eligible: true,
+        dynamic_context: { eligible: true },
+      },
+    },
+  });
+  const highGlobal = paper({
+    id: "high-global",
+    title: "High quality global paper",
+    journal: "Global Journal",
+    quality_score: 0.82,
+    quality_tier: "core",
+  });
+  const pools = buildWeeklyPushCandidatePools([dynamicEye, highGlobal]);
+
+  const selection = buildWeeklyPushDigestSelection(
+    pools.precisionCandidates,
+    profile({ subscription_normalized_keywords: ["ophthalmology"] }),
+    {
+      targetCount: 2,
+      fallbackCandidates: pools.fallbackCandidates,
+    },
+  );
+
+  assert.deepEqual(
+    selection.exactSelected.map((item) => item.id),
+    ["dynamic-eye"],
+  );
+  assert.deepEqual(
+    selection.trendingSelected.map((item) => item.id),
+    ["high-global"],
+  );
+  assert.deepEqual(selection.crossSelected, []);
 });

@@ -2,9 +2,9 @@ import { startOfIsoWeek, toDateString } from "@/lib/iso-week";
 import { createResendEmailSender } from "@/lib/resend-email";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
+  buildWeeklyPushCandidatePools,
   buildWeeklyPushDigestSelection,
   diversifyWeeklyPushCandidates,
-  sortWeeklyPushCandidates,
 } from "@/lib/weekly-push-selection";
 import {
   buildWeeklyPushDigestHtml,
@@ -23,6 +23,8 @@ import {
 } from "@/server/repositories/weekly-push";
 
 const DEFAULT_WEEKLY_PUSH_TARGET_COUNT = 7;
+const DEFAULT_WEEKLY_PUSH_CANDIDATE_LIMIT = 500;
+const MAX_WEEKLY_PUSH_CANDIDATE_LIMIT = 1000;
 const STRICT_WEEKLY_PUSH_REASON =
   "\u4e0e\u60a8\u7684\u671f\u520a\u8ba2\u9605\u548c\u5173\u952e\u8bcd\u504f\u597d\u540c\u65f6\u5339\u914d";
 const TRENDING_WEEKLY_PUSH_REASON =
@@ -36,9 +38,18 @@ function getWeeklyPushTargetCount() {
   return Math.max(1, Math.min(20, Math.floor(configured)));
 }
 
+function getWeeklyPushCandidateLimit() {
+  const configured = Number(
+    process.env.WEEKLY_PUSH_CANDIDATE_LIMIT ?? DEFAULT_WEEKLY_PUSH_CANDIDATE_LIMIT,
+  );
+  if (!Number.isFinite(configured)) return DEFAULT_WEEKLY_PUSH_CANDIDATE_LIMIT;
+  return Math.max(50, Math.min(MAX_WEEKLY_PUSH_CANDIDATE_LIMIT, Math.floor(configured)));
+}
+
 export async function runWeeklyPushJob() {
   const supabase = createServiceSupabaseClient();
   const targetCount = getWeeklyPushTargetCount();
+  const candidateLimit = getWeeklyPushCandidateLimit();
   const now = new Date();
   const currentWeekStart = startOfIsoWeek(now);
   const summaryStart = new Date(currentWeekStart);
@@ -51,22 +62,23 @@ export async function runWeeklyPushJob() {
   const candidatesAll = await listWeeklyPushCandidatePapers(supabase, {
     summaryStart: summaryStartStr,
     summaryEnd: summaryEndStr,
-    limit: 200,
+    limit: candidateLimit,
   });
-  const candidatePool = sortWeeklyPushCandidates(
-    candidatesAll.filter(
-      (paper) =>
-        (paper.quality_tier ?? "").toLowerCase() === "top" ||
-        (paper.quality_score ?? 0) >= 0.72,
-    ),
-  );
-  const selected = diversifyWeeklyPushCandidates(candidatePool, targetCount);
+  const {
+    precisionCandidates,
+    fallbackCandidates,
+    dynamicPrecisionCandidateCount,
+  } = buildWeeklyPushCandidatePools(candidatesAll);
+  const selected = diversifyWeeklyPushCandidates(fallbackCandidates, targetCount);
 
   const issueMeta = {
     fromDate: summaryStartStr,
     toDate: summaryEndStr,
     targetCount,
-    candidateCount: candidatePool.length,
+    candidateCount: fallbackCandidates.length,
+    rawCandidateCount: candidatesAll.length,
+    precisionCandidateCount: precisionCandidates.length,
+    dynamicPrecisionCandidateCount,
     selectedCount: selected.length,
   };
 
@@ -103,11 +115,12 @@ export async function runWeeklyPushJob() {
 
     const deliveredSet = await listDeliveredWeeklyPushPaperIds(supabase, {
       userId: profile.id,
-      paperIds: candidatePool.map((paper) => paper.id),
+      paperIds: precisionCandidates.map((paper) => paper.id),
     });
-    const selection = buildWeeklyPushDigestSelection(candidatePool, profile, {
+    const selection = buildWeeklyPushDigestSelection(precisionCandidates, profile, {
       targetCount,
       deliveredPaperIds: deliveredSet,
+      fallbackCandidates,
     });
     const personalized: WeeklyPushDigestPaper[] = [
       ...selection.exactSelected.map((paper) => ({

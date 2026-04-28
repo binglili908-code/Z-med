@@ -10,6 +10,7 @@ type LoadPubmedSummariesOptions = {
   chunkSize?: number;
   delayMinMs?: number;
   delayMaxMs?: number;
+  includeAbstracts?: boolean;
 };
 
 export async function loadPubmedSummariesByIds(
@@ -27,6 +28,8 @@ export async function loadPubmedSummariesByIds(
     await randomDelay(delayMinMs, delayMaxMs);
   }
 
-  await enrichSummariesWithAbstracts(summaries);
+  if (options.includeAbstracts ?? true) {
+    await enrichSummariesWithAbstracts(summaries);
+  }
   return summaries;
 }

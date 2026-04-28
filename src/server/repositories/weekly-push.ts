@@ -17,6 +17,7 @@ export type WeeklyPushCandidatePaper = {
   journal: string | null;
   keywords: string[] | null;
   mesh_terms: string[] | null;
+  source_payload?: Record<string, unknown> | null;
 };
 
 export type WeeklyPushProfileRow = {
@@ -42,6 +43,9 @@ export type WeeklyPushIssueMeta = {
   toDate: string;
   targetCount?: number;
   candidateCount: number;
+  rawCandidateCount?: number;
+  precisionCandidateCount?: number;
+  dynamicPrecisionCandidateCount?: number;
   selectedCount: number;
   sentCount?: number;
   skippedRepeatedUsers?: number;
@@ -52,6 +56,8 @@ export type WeeklyPushIssueMeta = {
 };
 
 const WEEKLY_CANDIDATE_SELECT =
+  "id,title,title_zh,abstract,abstract_zh,ai_analysis,pubmed_url,quality_score,quality_tier,publication_date,journal,keywords,mesh_terms,source_payload";
+const WEEKLY_CANDIDATE_LEGACY_SELECT =
   "id,title,title_zh,abstract,abstract_zh,ai_analysis,pubmed_url,quality_score,quality_tier,publication_date,journal,keywords,mesh_terms";
 const WEEKLY_PROFILE_SELECT =
   "id,contact_email,is_active,subscription_keywords,custom_journals";
@@ -62,19 +68,30 @@ export async function listWeeklyPushCandidatePapers(
   client: SupabaseDbClient,
   params: { summaryStart: string; summaryEnd: string; limit: number },
 ) {
-  const { data, error } = await client
-    .from("papers")
-    .select(WEEKLY_CANDIDATE_SELECT)
-    .eq("is_ai_med", true)
-    .gte("publication_date", params.summaryStart)
-    .lte("publication_date", params.summaryEnd)
-    .order("quality_score", { ascending: false })
-    .order("ai_med_score", { ascending: false })
-    .order("publication_date", { ascending: false })
-    .limit(params.limit);
+  const queryCandidates = (select: string) =>
+    client
+      .from("papers")
+      .select(select)
+      .eq("is_ai_med", true)
+      .gte("publication_date", params.summaryStart)
+      .lte("publication_date", params.summaryEnd)
+      .order("quality_score", { ascending: false })
+      .order("ai_med_score", { ascending: false })
+      .order("publication_date", { ascending: false })
+      .limit(params.limit);
+
+  const { data, error } = await queryCandidates(WEEKLY_CANDIDATE_SELECT);
+  if (error && isMissingColumnError(error)) {
+    const legacyQuery = await queryCandidates(WEEKLY_CANDIDATE_LEGACY_SELECT);
+    if (legacyQuery.error) {
+      throw new Error(`Load weekly papers failed: ${legacyQuery.error.message}`);
+    }
+    return (legacyQuery.data ?? []) as unknown as WeeklyPushCandidatePaper[];
+  }
+
   if (error) throw new Error(`Load weekly papers failed: ${error.message}`);
 
-  return (data ?? []) as WeeklyPushCandidatePaper[];
+  return (data ?? []) as unknown as WeeklyPushCandidatePaper[];
 }
 
 export async function upsertWeeklyPushIssueDraft(

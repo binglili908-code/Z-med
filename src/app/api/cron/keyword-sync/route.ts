@@ -43,6 +43,14 @@ function parseBoolean(value: string | null) {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
+function parseOptionalBoolean(value: string | null) {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
+  if (normalized === "0" || normalized === "false" || normalized === "no") return false;
+  return undefined;
+}
+
 function parseKeywordSyncOptions(req: Request): KeywordSyncJobOptions {
   const { searchParams } = new URL(req.url);
   const keywords = parseKeywordList(searchParams);
@@ -59,6 +67,14 @@ function parseKeywordSyncOptions(req: Request): KeywordSyncJobOptions {
     includeDiagnostics:
       parseBoolean(searchParams.get("diagnostics")) ||
       parseBoolean(searchParams.get("debug")),
+    includeAbstracts: parseOptionalBoolean(searchParams.get("includeAbstracts")),
+    resolveOpenAccess:
+      parseOptionalBoolean(searchParams.get("resolveOpenAccess")) ??
+      parseOptionalBoolean(searchParams.get("openAccess")) ??
+      parseOptionalBoolean(searchParams.get("oa")),
+    timeBudgetMs:
+      parsePositiveInteger(searchParams.get("timeBudgetMs")) ??
+      parsePositiveInteger(searchParams.get("budgetMs")),
   };
 }
 

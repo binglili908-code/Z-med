@@ -11,12 +11,19 @@ import type {
 } from "@/server/repositories/weekly-push";
 
 const WEEKLY_PRECISION_TARGET = 5;
+const WEEKLY_QUALITY_SCORE_THRESHOLD = 0.72;
 
 export type WeeklyPushDigestSelection = {
   exactSelected: WeeklyPushCandidatePaper[];
   trendingSelected: WeeklyPushCandidatePaper[];
   crossSelected: WeeklyPushCandidatePaper[];
   precisionShortage: number;
+};
+
+export type WeeklyPushCandidatePools = {
+  precisionCandidates: WeeklyPushCandidatePaper[];
+  fallbackCandidates: WeeklyPushCandidatePaper[];
+  dynamicPrecisionCandidateCount: number;
 };
 
 function normalizeTitle(title: string) {
@@ -85,6 +92,51 @@ function sortWeeklyPushMatches(
     if (scoreDiff !== 0) return scoreDiff;
     return String(b.publication_date ?? "").localeCompare(String(a.publication_date ?? ""));
   });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+export function isWeeklyPushQualityCandidate(paper: WeeklyPushCandidatePaper) {
+  return (
+    (paper.quality_tier ?? "").toLowerCase() === "top" ||
+    Number(paper.quality_score ?? 0) >= WEEKLY_QUALITY_SCORE_THRESHOLD
+  );
+}
+
+export function isDynamicKeywordRecommendationCandidate(paper: WeeklyPushCandidatePaper) {
+  const payload = asRecord(paper.source_payload);
+  const keywordSync = asRecord(payload?.keyword_sync);
+  const dynamicContext = asRecord(keywordSync?.dynamic_context);
+
+  return (
+    keywordSync?.recommendation_eligible === true &&
+    (dynamicContext?.eligible === true || keywordSync?.rpc_is_ai_med === true)
+  );
+}
+
+export function buildWeeklyPushCandidatePools(
+  candidates: WeeklyPushCandidatePaper[],
+): WeeklyPushCandidatePools {
+  const fallbackCandidates = sortWeeklyPushCandidates(
+    candidates.filter(isWeeklyPushQualityCandidate),
+  );
+  const fallbackIds = new Set(fallbackCandidates.map((paper) => paper.id));
+  const dynamicPrecisionCandidates = candidates.filter(
+    (paper) => !fallbackIds.has(paper.id) && isDynamicKeywordRecommendationCandidate(paper),
+  );
+
+  return {
+    precisionCandidates: sortWeeklyPushCandidates([
+      ...fallbackCandidates,
+      ...dynamicPrecisionCandidates,
+    ]),
+    fallbackCandidates,
+    dynamicPrecisionCandidateCount: dynamicPrecisionCandidates.length,
+  };
 }
 
 export function buildWeeklyPushProfileTerms(profile: WeeklyPushProfileRow) {
@@ -184,10 +236,14 @@ export function buildWeeklyPushDigestSelection(
   options: {
     targetCount: number;
     deliveredPaperIds?: Set<string>;
+    fallbackCandidates?: WeeklyPushCandidatePaper[];
   },
 ): WeeklyPushDigestSelection {
   const deliveredPaperIds = options.deliveredPaperIds ?? new Set<string>();
   const availableCandidates = candidates.filter((paper) => !deliveredPaperIds.has(paper.id));
+  const availableFallbackCandidates = (options.fallbackCandidates ?? candidates).filter(
+    (paper) => !deliveredPaperIds.has(paper.id),
+  );
   const exactCandidates = selectPersonalizedWeeklyPushPool(availableCandidates, profile);
   const exactSelected = diversifyWeeklyPushCandidates(
     exactCandidates,
@@ -197,13 +253,15 @@ export function buildWeeklyPushDigestSelection(
   const precisionShortage = Math.max(0, WEEKLY_PRECISION_TARGET - exactSelected.length);
 
   const trendingSelected = diversifyWeeklyPushCandidates(
-    sortWeeklyPushCandidates(availableCandidates.filter((paper) => !selectedIds.has(paper.id))),
+    sortWeeklyPushCandidates(
+      availableFallbackCandidates.filter((paper) => !selectedIds.has(paper.id)),
+    ),
     exactSelected.length < options.targetCount ? 1 : 0,
   );
   for (const paper of trendingSelected) selectedIds.add(paper.id);
 
   const topicFallbackCandidates = selectTopicFallbackWeeklyPushPool(
-    availableCandidates.filter((paper) => !selectedIds.has(paper.id)),
+    availableFallbackCandidates.filter((paper) => !selectedIds.has(paper.id)),
     profile,
   );
   const crossTarget = Math.max(
@@ -216,7 +274,9 @@ export function buildWeeklyPushDigestSelection(
   if (crossSelected.length < crossTarget) {
     crossSelected.push(
       ...diversifyWeeklyPushCandidates(
-        sortWeeklyPushCandidates(availableCandidates.filter((paper) => !selectedIds.has(paper.id))),
+        sortWeeklyPushCandidates(
+          availableFallbackCandidates.filter((paper) => !selectedIds.has(paper.id)),
+        ),
         crossTarget - crossSelected.length,
       ),
     );
