@@ -139,4 +139,33 @@ export function createInMemoryMedicalQueryCache(
   };
 }
 
+export function createLayeredMedicalQueryCache(
+  stores: Array<MedicalQueryCacheStore | null | undefined>,
+): MedicalQueryCacheStore {
+  const activeStores = stores.filter((store): store is MedicalQueryCacheStore => Boolean(store));
+
+  return {
+    async getPlan(rawInput) {
+      for (const store of activeStores) {
+        const plan = await store.getPlan(rawInput);
+        if (plan) return plan;
+      }
+      return null;
+    },
+    async setPlan(rawInput, plan) {
+      await Promise.all(activeStores.map((store) => store.setPlan(rawInput, plan)));
+    },
+    async getTermMapping(key) {
+      for (const store of activeStores) {
+        const mapping = await store.getTermMapping(key);
+        if (mapping) return mapping;
+      }
+      return null;
+    },
+    async setTermMapping(key, mapping) {
+      await Promise.all(activeStores.map((store) => store.setTermMapping(key, mapping)));
+    },
+  };
+}
+
 export const defaultMedicalQueryCache = createInMemoryMedicalQueryCache();

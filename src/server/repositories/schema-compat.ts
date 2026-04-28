@@ -9,3 +9,14 @@ export function isMissingColumnError(error: unknown) {
     /schema cache/i.test(text)
   );
 }
+
+export function isMissingRelationError(error: unknown) {
+  const value = error as { code?: string; message?: string; details?: string } | null;
+  const text = `${value?.message ?? ""}\n${value?.details ?? ""}`;
+  return (
+    value?.code === "42P01" ||
+    /relation .* does not exist/i.test(text) ||
+    /could not find .* table/i.test(text) ||
+    /schema cache/i.test(text)
+  );
+}

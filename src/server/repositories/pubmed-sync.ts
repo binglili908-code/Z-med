@@ -1,6 +1,9 @@
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { getJournalKeyCandidates } from "@/lib/journal-normalization";
-import { isMissingColumnError } from "@/server/repositories/schema-compat";
+import {
+  isMissingColumnError,
+  isMissingRelationError,
+} from "@/server/repositories/schema-compat";
 
 type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "from" | "rpc">;
 
@@ -66,6 +69,21 @@ export type JournalSyncLogRow = {
   error_message: string | null;
   finished_at: string;
   created_at: string;
+};
+
+export type PaperRecommendationContextRow = {
+  pmid: string;
+  keyword: string;
+  input_hash: string | null;
+  plan_topic: string | null;
+  source: string;
+  rpc_score: Record<string, unknown>;
+  dynamic_context: Record<string, unknown>;
+  matched_terms: string[];
+  is_recommendation_eligible: boolean;
+  quality_tier: string | null;
+  synced_at: string;
+  updated_at: string;
 };
 
 const ACTIVE_PROFILE_KEYWORDS_SELECT =
@@ -317,7 +335,20 @@ export async function upsertKeywordSyncedPaper(
 ) {
   const { error } = await client
     .from("papers")
-    .upsert(row, { onConflict: "pmid", ignoreDuplicates: true });
+    .upsert(row, { onConflict: "pmid" });
+  return { ok: !error, errorMessage: error?.message ?? null };
+}
+
+export async function upsertPaperRecommendationContext(
+  client: SupabaseDbClient,
+  row: PaperRecommendationContextRow,
+) {
+  const { error } = await client
+    .from("paper_recommendation_contexts")
+    .upsert(row, { onConflict: "pmid,keyword" });
+  if (error && (isMissingColumnError(error) || isMissingRelationError(error))) {
+    return { ok: false, errorMessage: null };
+  }
   return { ok: !error, errorMessage: error?.message ?? null };
 }
 

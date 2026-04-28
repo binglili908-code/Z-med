@@ -220,7 +220,6 @@ export async function listPersonalizedFeedCandidatePapers(
     .from("papers")
     .select(FEED_PAPER_SELECT)
     .eq("is_ai_med", true)
-    .in("quality_tier", ["top", "core"])
     .gte("publication_date", params.cutoffDate)
     .order("quality_score", { ascending: false })
     .order("ai_med_score", { ascending: false })

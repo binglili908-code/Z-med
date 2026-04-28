@@ -1,6 +1,16 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { computeDynamicQualityScore } from "@/lib/journal-score";
+import {
+  buildMedicalQueryInputHash,
+  createLayeredMedicalQueryCache,
+  defaultMedicalQueryCache,
+} from "@/lib/medical-query-cache";
+import {
+  scoreDynamicMedicalContext,
+  type DynamicMedicalContextScore,
+} from "@/lib/dynamic-medical-context-scoring";
 import { scoreAndUpsertPapers } from "@/lib/pubmed-paper-scoring";
+import type { MedicalQueryPlan } from "@/lib/medical-query-plan";
 import { planMedicalQuery } from "@/lib/medical-query-planner";
 import {
   callMiniMaxKeywordExpansion,
@@ -15,6 +25,8 @@ import {
   randomDelay,
   resolveOpenAccessByDoi,
 } from "@/lib/pubmed-sync-client";
+import { dedupeTerms } from "@/lib/pubmed-sync-rules";
+import { createSupabaseMedicalQueryCache } from "@/lib/supabase-medical-query-cache";
 import {
   buildUserPreferenceJournalQueries,
   buildJournalWindowQuery,
@@ -44,6 +56,7 @@ import {
   readBackfillMonthOffset,
   resolveJournalQuality,
   saveLlmSynonyms,
+  upsertPaperRecommendationContext,
   upsertKeywordSyncedPaper,
   writeBackfillMonthOffset,
   writeSyncStateValue,
@@ -54,6 +67,8 @@ export type KeywordSyncJobOptions = {
   keywordLimit?: number;
   windows?: number[];
   maxNewPmids?: number;
+  includeExisting?: boolean;
+  includeDiagnostics?: boolean;
 };
 
 const DEFAULT_KEYWORD_SYNC_WINDOWS = [7, 30];
@@ -81,6 +96,80 @@ function normalizeSyncWindows(input: number[] | undefined) {
     ),
   );
   return windows.length ? windows : DEFAULT_KEYWORD_SYNC_WINDOWS;
+}
+
+function bestDynamicContextScore(args: {
+  paper: Parameters<typeof scoreDynamicMedicalContext>[0]["paper"];
+  matchedKeywords: string[];
+  plannerPlansByKeyword: Map<string, MedicalQueryPlan>;
+  rpcScore: { isAiMed: boolean; score: number };
+}) {
+  let best: DynamicMedicalContextScore | null = null;
+  for (const keyword of args.matchedKeywords) {
+    const plan = args.plannerPlansByKeyword.get(keyword);
+    if (!plan) continue;
+    const scored = scoreDynamicMedicalContext({
+      paper: args.paper,
+      plan,
+      rpcScore: args.rpcScore,
+      plannerQueryVerified: true,
+    });
+    if (!best || Number(scored.eligible) > Number(best.eligible) || scored.score > best.score) {
+      best = scored;
+    }
+  }
+  return best;
+}
+
+function buildKeywordSyncedPaperKeywords(args: {
+  paperKeywords: string[];
+  matchedKeywords: string[];
+  plannerPlansByKeyword: Map<string, MedicalQueryPlan>;
+  dynamicContext: DynamicMedicalContextScore | null;
+}) {
+  const planTopics = args.matchedKeywords
+    .map((keyword) => args.plannerPlansByKeyword.get(keyword)?.topic)
+    .filter((topic): topic is string => Boolean(topic));
+  return dedupeTerms([
+    ...args.paperKeywords,
+    ...planTopics,
+    ...(args.dynamicContext?.contextTerms ?? []),
+    ...(args.dynamicContext?.meshTerms ?? []),
+    ...(args.dynamicContext?.aiTerms ?? []),
+  ]).slice(0, 60);
+}
+
+function recommendationContextRows(args: {
+  pmid: string;
+  matchedKeywords: string[];
+  plannerPlansByKeyword: Map<string, MedicalQueryPlan>;
+  dynamicContext: DynamicMedicalContextScore | null;
+  rpcScore: { isAiMed: boolean; score: number };
+  isRecommendationEligible: boolean;
+  qualityTier: string | null;
+}) {
+  const syncedAt = new Date().toISOString();
+  return args.matchedKeywords.map((keyword) => {
+    const plan = args.plannerPlansByKeyword.get(keyword);
+    return {
+      pmid: args.pmid,
+      keyword,
+      input_hash: buildMedicalQueryInputHash([keyword]),
+      plan_topic: plan?.topic ?? null,
+      source: "keyword_sync_dynamic_context",
+      rpc_score: args.rpcScore,
+      dynamic_context: (args.dynamicContext ?? {}) as unknown as Record<string, unknown>,
+      matched_terms: dedupeTerms([
+        ...(args.dynamicContext?.aiTerms ?? []),
+        ...(args.dynamicContext?.contextTerms ?? []),
+        ...(args.dynamicContext?.meshTerms ?? []),
+      ]),
+      is_recommendation_eligible: args.isRecommendationEligible,
+      quality_tier: args.qualityTier,
+      synced_at: syncedAt,
+      updated_at: syncedAt,
+    };
+  });
 }
 
 export async function runPubmedSyncJob() {
@@ -268,6 +357,10 @@ export async function runJournalSyncJob() {
 export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
   const supabase = createServiceSupabaseClient();
   const journalMap = await loadJournalQualityMap(supabase);
+  const plannerCache = createLayeredMedicalQueryCache([
+    createSupabaseMedicalQueryCache(supabase),
+    defaultMedicalQueryCache,
+  ]);
 
   const allKeywords = new Set<string>();
   if (options.keywords?.length) {
@@ -288,6 +381,7 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
   const syncWindows = normalizeSyncWindows(options.windows);
   const maxNewPmids =
     normalizePositiveInteger(options.maxNewPmids, 200) ?? DEFAULT_KEYWORD_SYNC_MAX_NEW_PMIDS;
+  const processedPaperDiagnostics: Array<Record<string, unknown>> = [];
   if (!keywordList.length) {
     return {
       keywordCount: 0,
@@ -301,13 +395,17 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       llmCalls: 0,
       plannerQueryCount: 0,
       candidatePmidCount: 0,
+      existingCandidatePmidCount: 0,
       newPmidCount: 0,
+      selectedPmidCount: 0,
       processedPmidCount: 0,
       truncatedNewPmids: false,
       options: {
         keywordLimit: keywordLimit ?? null,
         maxNewPmids,
+        includeExisting: Boolean(options.includeExisting),
       },
+      processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
       keywordStats: [] as Array<{
         keyword: string;
         found: number;
@@ -323,13 +421,15 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
   let llmCalls = 0;
   let plannerQueryCount = 0;
   const stats = new KeywordSyncStats();
+  const plannerPlansByKeyword = new Map<string, MedicalQueryPlan>();
 
   for (const keyword of keywordList) {
     try {
       const plannerQueriesByWindow = new Map<number, string[]>();
 
       try {
-        const plan = await planMedicalQuery([keyword]);
+        const plan = await planMedicalQuery([keyword], { cache: plannerCache });
+        plannerPlansByKeyword.set(keyword, plan);
         for (const daysBack of syncWindows) {
           const queries = buildPlannerKeywordPubmedQueries(plan, daysBack);
           if (queries.length) {
@@ -432,20 +532,25 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       llmCalls,
       plannerQueryCount,
       candidatePmidCount: 0,
+      existingCandidatePmidCount: 0,
       newPmidCount: 0,
+      selectedPmidCount: 0,
       processedPmidCount: 0,
       truncatedNewPmids: false,
       options: {
         keywordLimit: keywordLimit ?? null,
         maxNewPmids,
+        includeExisting: Boolean(options.includeExisting),
       },
+      processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
     };
   }
 
   const existing = await loadExistingPaperPmids(supabase, deduped);
   const newPmids = deduped.filter((id) => !existing.has(id));
-  const pmidsToProcess = newPmids.slice(0, maxNewPmids);
-  if (!newPmids.length) {
+  const selectedPmids = options.includeExisting ? deduped : newPmids;
+  const pmidsToProcess = selectedPmids.slice(0, maxNewPmids);
+  if (!selectedPmids.length) {
     return {
       keywordCount: keywordList.length,
       keywords: keywordList,
@@ -454,13 +559,17 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       llmCalls,
       plannerQueryCount,
       candidatePmidCount: deduped.length,
-      newPmidCount: 0,
+      existingCandidatePmidCount: existing.size,
+      newPmidCount: newPmids.length,
+      selectedPmidCount: 0,
       processedPmidCount: 0,
       truncatedNewPmids: false,
       options: {
         keywordLimit: keywordLimit ?? null,
         maxNewPmids,
+        includeExisting: Boolean(options.includeExisting),
       },
+      processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
     };
   }
 
@@ -474,13 +583,22 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       continue;
     }
     const scoreObj = (scoreData ?? {}) as { score?: number | string; is_ai_med?: boolean };
+    const rpcIsAiMed = Boolean(scoreObj.is_ai_med);
     const aiScore = Number(scoreObj.score ?? 0);
 
     const journalRow = resolveJournalQuality(paper, journalMap);
     const tier = (journalRow?.tier ?? "emerging") as "top" | "core" | "emerging";
-    const isAiMed = Boolean(scoreObj.is_ai_med) && tier !== "emerging";
+    const matchedKeywords = stats.getKeywordsForPmid(paper.pmid);
+    const dynamicContext = bestDynamicContextScore({
+      paper,
+      matchedKeywords,
+      plannerPlansByKeyword,
+      rpcScore: { isAiMed: rpcIsAiMed, score: aiScore },
+    });
+    const isAiMed = rpcIsAiMed || Boolean(dynamicContext?.eligible);
+    const aiScoreForRanking = Math.max(aiScore, dynamicContext?.score ?? 0);
     const dynamic = computeDynamicQualityScore({
-      aiMedScore: aiScore,
+      aiMedScore: aiScoreForRanking,
       baseWeight: journalRow?.weight ?? 0.5,
       impactFactor: journalRow?.impact_factor ?? null,
       jcrQuartile: journalRow?.jcr_quartile ?? null,
@@ -489,7 +607,20 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
     const qualityScore = dynamic.qualityScore;
     const oa = await resolveOpenAccessByDoi(paper.doi);
 
-    const matchedKeywords = stats.getKeywordsForPmid(paper.pmid);
+    const topCoreEligible = tier !== "emerging";
+    const recommendationDropReasons = [
+      ...(!isAiMed ? ["ai_med_score_below_threshold"] : []),
+      ...(!isAiMed && !dynamicContext?.eligible ? ["dynamic_context_not_verified"] : []),
+    ];
+    const globalFeedExclusionReasons = [
+      ...(!topCoreEligible ? ["journal_not_top_or_core"] : []),
+    ];
+    const paperKeywords = buildKeywordSyncedPaperKeywords({
+      paperKeywords: paper.keywords,
+      matchedKeywords,
+      plannerPlansByKeyword,
+      dynamicContext,
+    });
     const existingPayload =
       paper.source_payload && typeof paper.source_payload === "object" ? paper.source_payload : {};
     const sourcePayload = {
@@ -497,6 +628,15 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       keyword_sync: {
         matched_keywords: matchedKeywords,
         windows: syncWindows,
+        rpc_ai_med_score: aiScore,
+        ai_med_score: aiScoreForRanking,
+        rpc_is_ai_med: rpcIsAiMed,
+        dynamic_context: dynamicContext,
+        quality_tier: tier,
+        top_core_eligible: topCoreEligible,
+        recommendation_eligible: isAiMed,
+        recommendation_drop_reasons: recommendationDropReasons,
+        global_feed_exclusion_reasons: globalFeedExclusionReasons,
         synced_at: new Date().toISOString(),
       },
     };
@@ -511,10 +651,10 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       pubmed_url: paper.pubmed_url,
       authors: paper.authors,
       mesh_terms: paper.mesh_terms,
-      keywords: paper.keywords,
+      keywords: paperKeywords,
       is_open_access: oa.is_open_access,
       oa_pdf_url: oa.oa_pdf_url,
-      ai_med_score: aiScore,
+      ai_med_score: aiScoreForRanking,
       is_ai_med: isAiMed,
       quality_tier: tier,
       quality_score: qualityScore,
@@ -525,8 +665,36 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       fetched_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    if (options.includeDiagnostics) {
+      processedPaperDiagnostics.push({
+        pmid: paper.pmid,
+        title: paper.title,
+        journal: paper.journal,
+        publicationDate: paper.publication_date,
+        aiMedScore: aiScore,
+        aiMedScoreForRanking: aiScoreForRanking,
+        rpcIsAiMed,
+        dynamicContext,
+        qualityTier: tier,
+        topCoreEligible,
+        recommendationEligible: isAiMed,
+        recommendationDropReasons,
+        globalFeedExclusionReasons,
+      });
+    }
     if (upsertResult.ok) {
       stats.recordUpsert({ matchedKeywords, isAiMed });
+      for (const contextRow of recommendationContextRows({
+        pmid: paper.pmid,
+        matchedKeywords,
+        plannerPlansByKeyword,
+        dynamicContext,
+        rpcScore: { isAiMed: rpcIsAiMed, score: aiScore },
+        isRecommendationEligible: isAiMed,
+        qualityTier: tier,
+      })) {
+        await upsertPaperRecommendationContext(supabase, contextRow);
+      }
     }
     await randomDelay(120, 220);
   }
@@ -539,12 +707,16 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
     llmCalls,
     plannerQueryCount,
     candidatePmidCount: deduped.length,
+    existingCandidatePmidCount: existing.size,
     newPmidCount: newPmids.length,
+    selectedPmidCount: selectedPmids.length,
     processedPmidCount: pmidsToProcess.length,
-    truncatedNewPmids: pmidsToProcess.length < newPmids.length,
+    truncatedNewPmids: pmidsToProcess.length < selectedPmids.length,
     options: {
       keywordLimit: keywordLimit ?? null,
       maxNewPmids,
+      includeExisting: Boolean(options.includeExisting),
     },
+    processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
   };
 }

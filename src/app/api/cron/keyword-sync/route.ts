@@ -38,6 +38,11 @@ function parseWindows(value: string | null) {
   return windows.length ? windows : undefined;
 }
 
+function parseBoolean(value: string | null) {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
 function parseKeywordSyncOptions(req: Request): KeywordSyncJobOptions {
   const { searchParams } = new URL(req.url);
   const keywords = parseKeywordList(searchParams);
@@ -48,6 +53,12 @@ function parseKeywordSyncOptions(req: Request): KeywordSyncJobOptions {
     maxNewPmids:
       parsePositiveInteger(searchParams.get("maxNew")) ??
       parsePositiveInteger(searchParams.get("maxNewPmids")),
+    includeExisting:
+      parseBoolean(searchParams.get("includeExisting")) ||
+      parseBoolean(searchParams.get("refreshExisting")),
+    includeDiagnostics:
+      parseBoolean(searchParams.get("diagnostics")) ||
+      parseBoolean(searchParams.get("debug")),
   };
 }
 
