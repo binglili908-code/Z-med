@@ -143,13 +143,23 @@ type DailyPaperView = {
   oaPdfUrl: string | null;
   pdfEmailedAt: string | null;
   tagsRaw: string[];
-  abstractZh: string;
+  abstractEn: string;
+  abstractZh: string | null;
   sourceType: "precision" | "trending" | "serendipity";
   recommendationReason: string | null;
 };
 
 function parseDate(date: string | null) {
   return date ?? "Today";
+}
+
+function resolveAbstractEn(abstractEn: string | null, fallbackDate: string) {
+  if (abstractEn?.trim()) return abstractEn.trim();
+  return `No English abstract is available for this paper yet. Publication date: ${fallbackDate}.`;
+}
+
+function resolveInitialAbstractZh(abstractZh: string | null) {
+  return abstractZh?.trim() ? abstractZh.trim() : null;
 }
 
 function resolveAbstractZh(
@@ -167,7 +177,8 @@ function resolveAbstractZh(
 function toDailyPaperView(p: FeedPaper): DailyPaperView {
   const journal = p.journal ?? "PubMed";
   const date = parseDate(p.publication_date);
-  const abstractZh = resolveAbstractZh(p.abstract_zh, p.abstract, p.ai_analysis, date);
+  const abstractEn = resolveAbstractEn(p.abstract, date);
+  const abstractZh = resolveInitialAbstractZh(p.abstract_zh);
 
   return {
     id: p.id,
@@ -185,6 +196,7 @@ function toDailyPaperView(p: FeedPaper): DailyPaperView {
     oaPdfUrl: p.oa_pdf_url,
     pdfEmailedAt: p.pdf_emailed_at,
     tagsRaw: [],
+    abstractEn,
     abstractZh,
     sourceType: p.source_type,
     recommendationReason: p.recommendation_reason,
@@ -210,6 +222,7 @@ const fallbackPaper: DailyPaperView = {
   abstractZh: "中文摘要加载中（占位）。",
   sourceType: "precision",
   recommendationReason: null,
+  abstractEn: "Loading paper abstract.",
 };
 
 const exactMatchEmptyPaper: DailyPaperView = {
@@ -228,6 +241,8 @@ const exactMatchEmptyPaper: DailyPaperView = {
   oaPdfUrl: null,
   pdfEmailedAt: null,
   tagsRaw: [],
+  abstractEn:
+    "\u672c\u671f\u6587\u732e\u6c60\u91cc\u6ca1\u6709\u540c\u65f6\u6ee1\u8db3\u60a8\u8bbe\u5b9a\u7684\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002\u6211\u4eec\u4e0d\u4f1a\u7528\u53ea\u5339\u914d\u671f\u520a\u6216\u53ea\u5339\u914d\u5173\u952e\u8bcd\u7684\u6587\u732e\u6765\u51d1\u6570\uff0c\u60a8\u53ef\u4ee5\u653e\u5bbd\u8ba2\u9605\u6761\u4ef6\u6216\u7a0d\u540e\u518d\u67e5\u770b\u3002",
   abstractZh:
     "\u672c\u671f\u6587\u732e\u6c60\u91cc\u6ca1\u6709\u540c\u65f6\u6ee1\u8db3\u60a8\u8bbe\u5b9a\u7684\u671f\u520a\u548c\u5173\u952e\u8bcd\u7684\u6587\u732e\u3002\u6211\u4eec\u4e0d\u4f1a\u7528\u53ea\u5339\u914d\u671f\u520a\u6216\u53ea\u5339\u914d\u5173\u952e\u8bcd\u7684\u6587\u732e\u6765\u51d1\u6570\uff0c\u60a8\u53ef\u4ee5\u653e\u5bbd\u8ba2\u9605\u6761\u4ef6\u6216\u7a0d\u540e\u518d\u67e5\u770b\u3002",
   sourceType: "precision",
@@ -497,6 +512,22 @@ export function DailyPaperModule() {
   const isSummaryExpanded = React.useCallback(
     (paperId: string) => Boolean(expandedSummaryIds[paperId]),
     [expandedSummaryIds],
+  );
+
+  const isTranslatedSummaryVisible = React.useCallback(
+    (item: DailyPaperView) => translateState[item.id] === "done" && Boolean(item.abstractZh?.trim()),
+    [translateState],
+  );
+
+  const summaryText = React.useCallback(
+    (item: DailyPaperView) =>
+      isTranslatedSummaryVisible(item) ? item.abstractZh?.trim() || item.abstractEn : item.abstractEn,
+    [isTranslatedSummaryVisible],
+  );
+
+  const summaryHeading = React.useCallback(
+    (item: DailyPaperView) => (isTranslatedSummaryVisible(item) ? "中文摘要" : "English Abstract"),
+    [isTranslatedSummaryVisible],
   );
 
   const handleSelfCheck = React.useCallback(async () => {
@@ -879,10 +910,10 @@ export function DailyPaperModule() {
       <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 flex-grow z-10">
         <h4 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
           <div className="w-1.5 h-4 bg-teal-500 rounded-full"></div>
-          中文摘要
+          {summaryHeading(paper)}
         </h4>
         <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-wrap">
-          {isSummaryExpanded(paper.id) ? paper.abstractZh : previewSummary(paper.abstractZh)}
+          {isSummaryExpanded(paper.id) ? summaryText(paper) : previewSummary(summaryText(paper))}
         </p>
         <div
           className={`mt-2 overflow-hidden transition-all duration-300 ${
@@ -952,7 +983,7 @@ export function DailyPaperModule() {
               </div>
               {isSummaryExpanded(it.id) ? (
                 <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 whitespace-pre-wrap">
-                  {it.abstractZh}
+                  {summaryText(it)}
                 </div>
               ) : null}
             </div>
@@ -1050,7 +1081,7 @@ export function DailyPaperModule() {
                   </div>
                   {isSummaryExpanded(`browse-${it.id}`) ? (
                     <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 whitespace-pre-wrap">
-                      {it.abstractZh}
+                      {summaryText(it)}
                     </div>
                   ) : null}
                 </div>

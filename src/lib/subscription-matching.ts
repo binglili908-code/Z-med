@@ -37,7 +37,24 @@ const SUBSCRIPTION_ALIASES: Record<string, string[]> = {
     "pancreatic ductal adenocarcinoma",
     "pancreatic neoplasms",
   ],
+  "\u8840\u7ba1": [
+    "vascular surgery",
+    "endovascular surgery",
+    "vascular disease",
+    "blood vessel",
+  ],
 };
+
+const BROAD_TOPIC_TERMS = new Set([
+  "blood vessel",
+  "blood vessels",
+  "bloodvessel",
+  "bloodvessels",
+  "vascular",
+  "vessel",
+  "vessels",
+  "\u8840\u7ba1",
+]);
 
 export function normalizeMatchText(input: string) {
   return input
@@ -90,6 +107,14 @@ export function textMatchesAnyTerm(text: string, terms: string[]) {
       Boolean(normalizedTerm && normalized.includes(normalizedTerm)) ||
       Boolean(compactTerm && compact.includes(compactTerm))
     );
+  });
+}
+
+export function hasBroadTopicTerm(terms: string[]) {
+  return terms.some((term) => {
+    const normalized = normalizeMatchText(term);
+    const compact = compactText(term);
+    return BROAD_TOPIC_TERMS.has(normalized) || BROAD_TOPIC_TERMS.has(compact);
   });
 }
 

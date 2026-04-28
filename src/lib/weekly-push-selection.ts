@@ -1,6 +1,7 @@
 import {
   buildSearchText,
   expandSubscriptionTerms,
+  hasBroadTopicTerm,
   journalMatchesAnyTerm,
   textMatchesAnyTerm,
 } from "@/lib/subscription-matching";
@@ -24,19 +25,57 @@ function matchJournal(paper: WeeklyPushCandidatePaper, journalTerms: string[]) {
 
 function matchKeyword(paper: WeeklyPushCandidatePaper, keywords: string[]) {
   if (!keywords.length) return true;
-  return textMatchesAnyTerm(
-    buildSearchText([
-      paper.title ?? "",
-      paper.title_zh ?? "",
-      paper.abstract ?? "",
-      paper.abstract_zh ?? "",
-      paper.journal ?? "",
-      (paper.keywords ?? []).join(" "),
-      (paper.mesh_terms ?? []).join(" "),
-      paper.ai_analysis ? JSON.stringify(paper.ai_analysis) : "",
-    ]),
+  const titleMatch = textMatchesAnyTerm(buildSearchText([paper.title ?? "", paper.title_zh ?? ""]), keywords);
+  const metadataMatch = textMatchesAnyTerm(
+    buildSearchText([(paper.keywords ?? []).join(" "), (paper.mesh_terms ?? []).join(" ")]),
     keywords,
   );
+  const abstractMatch = textMatchesAnyTerm(
+    buildSearchText([paper.abstract ?? "", paper.abstract_zh ?? ""]),
+    keywords,
+  );
+  const aiAnalysisMatch =
+    Boolean(paper.ai_analysis) && textMatchesAnyTerm(buildSearchText([JSON.stringify(paper.ai_analysis)]), keywords);
+
+  if (hasBroadTopicTerm(keywords)) {
+    return titleMatch || metadataMatch;
+  }
+  return titleMatch || metadataMatch || abstractMatch || aiAnalysisMatch;
+}
+
+function keywordMatchScore(paper: WeeklyPushCandidatePaper, keywords: string[]) {
+  if (!keywords.length) return 0;
+  let score = 0;
+  if (textMatchesAnyTerm(buildSearchText([paper.title ?? "", paper.title_zh ?? ""]), keywords)) score += 30;
+  if (
+    textMatchesAnyTerm(
+      buildSearchText([(paper.keywords ?? []).join(" "), (paper.mesh_terms ?? []).join(" ")]),
+      keywords,
+    )
+  ) {
+    score += 25;
+  }
+  if (textMatchesAnyTerm(buildSearchText([paper.abstract ?? "", paper.abstract_zh ?? ""]), keywords)) score += 8;
+  if (
+    paper.ai_analysis &&
+    textMatchesAnyTerm(buildSearchText([JSON.stringify(paper.ai_analysis)]), keywords)
+  ) {
+    score += 3;
+  }
+  return score;
+}
+
+function sortWeeklyPushMatches(
+  candidates: WeeklyPushCandidatePaper[],
+  keywords: string[],
+) {
+  return [...candidates].sort((a, b) => {
+    const matchDiff = keywordMatchScore(b, keywords) - keywordMatchScore(a, keywords);
+    if (matchDiff !== 0) return matchDiff;
+    const scoreDiff = Number(b.quality_score ?? 0) - Number(a.quality_score ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return String(b.publication_date ?? "").localeCompare(String(a.publication_date ?? ""));
+  });
 }
 
 export function buildWeeklyPushProfileTerms(profile: WeeklyPushProfileRow) {
@@ -112,7 +151,9 @@ export function selectPersonalizedWeeklyPushPool(
     return [];
   }
 
-  return sortWeeklyPushCandidates(filtered.length ? filtered : candidates);
+  return keywords.length
+    ? sortWeeklyPushMatches(filtered.length ? filtered : candidates, keywords)
+    : sortWeeklyPushCandidates(filtered.length ? filtered : candidates);
 }
 
 export function selectTopicFallbackWeeklyPushPool(
@@ -122,7 +163,8 @@ export function selectTopicFallbackWeeklyPushPool(
   const { keywords, journals } = buildWeeklyPushProfileTerms(profile);
   if (!keywords.length || !journals.length) return [];
 
-  return sortWeeklyPushCandidates(
+  return sortWeeklyPushMatches(
     candidates.filter((paper) => matchKeyword(paper, keywords) && !matchJournal(paper, journals)),
+    keywords,
   );
 }

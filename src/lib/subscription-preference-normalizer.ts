@@ -1,4 +1,9 @@
 import { callMiniMaxChat, getMiniMaxApiKey } from "@/lib/minimax";
+import {
+  planMedicalQuery,
+  type MedicalQueryPlannerDependencies,
+} from "@/lib/medical-query-planner";
+import type { MedicalQueryPlan } from "@/lib/medical-query-plan";
 import { parseJsonObjectFromModelOutput } from "@/lib/model-json";
 import { assistPubmedKeywords } from "@/lib/pubmed-query-assist";
 import {
@@ -19,6 +24,15 @@ type MiniMaxPreferencePayload = {
   journals?: unknown;
   aliases?: unknown;
   notes?: unknown;
+};
+
+export type SubscriptionPreferenceNormalizerDependencies = {
+  planMedicalQuery?: (
+    input: string[],
+    dependencies?: MedicalQueryPlannerDependencies,
+  ) => Promise<MedicalQueryPlan>;
+  medicalQueryPlannerDependencies?: MedicalQueryPlannerDependencies;
+  medicalQueryPlannerEnabled?: boolean;
 };
 
 function dedupeTerms(values: unknown, maxItems: number) {
@@ -112,10 +126,49 @@ function logPreferenceParseDiagnostic(details: Record<string, unknown>) {
   }
 }
 
+export function isMedicalQueryPlannerEnabled(env: NodeJS.ProcessEnv = process.env) {
+  return env.MEDICAL_QUERY_PLANNER_ENABLED?.trim().toLowerCase() === "true";
+}
+
+async function maybeAddMedicalQueryPlanMetadata(args: {
+  normalizedTerms: Record<string, unknown>;
+  rawKeywords: string[];
+  normalizedKeywords: string[];
+  dependencies: SubscriptionPreferenceNormalizerDependencies;
+}) {
+  const enabled =
+    args.dependencies.medicalQueryPlannerEnabled ?? isMedicalQueryPlannerEnabled();
+  if (!enabled) return args.normalizedTerms;
+  const input = dedupeTerms([...args.rawKeywords, ...args.normalizedKeywords], 40);
+  if (!input.length) return args.normalizedTerms;
+
+  try {
+    const planner = args.dependencies.planMedicalQuery ?? planMedicalQuery;
+    const plan = await planner(input, args.dependencies.medicalQueryPlannerDependencies);
+    return {
+      ...args.normalizedTerms,
+      medical_query_planner: {
+        source: "dynamic_medical_query_planner",
+        plan,
+        error: null,
+      },
+    };
+  } catch (error) {
+    return {
+      ...args.normalizedTerms,
+      medical_query_planner: {
+        source: "dynamic_medical_query_planner",
+        plan: null,
+        error: error instanceof Error ? error.message : "Unknown medical query planner error",
+      },
+    };
+  }
+}
+
 export async function normalizeSubscriptionPreferences(args: {
   keywords: string[];
   customJournals: string[];
-}): Promise<NormalizedSubscriptionPreferences> {
+}, dependencies: SubscriptionPreferenceNormalizerDependencies = {}): Promise<NormalizedSubscriptionPreferences> {
   if (!args.keywords.length && !args.customJournals.length) {
     return {
       keywords: [],
@@ -174,10 +227,7 @@ export async function normalizeSubscriptionPreferences(args: {
       maxEntryTermsPerRecord: 8,
     });
     const assistedKeywords = pubmedAssist.keywords.length ? pubmedAssist.keywords : keywords;
-
-    return {
-      keywords: expandSubscriptionTerms(assistedKeywords),
-      journals: expandSubscriptionTerms(journals),
+    const normalizedTerms = await maybeAddMedicalQueryPlanMetadata({
       normalizedTerms: {
         source: "minimax",
         raw_keywords: args.keywords,
@@ -201,6 +251,15 @@ export async function normalizeSubscriptionPreferences(args: {
           output_tokens: response.outputTokens ?? null,
         },
       },
+      rawKeywords: args.keywords,
+      normalizedKeywords: assistedKeywords,
+      dependencies,
+    });
+
+    return {
+      keywords: expandSubscriptionTerms(assistedKeywords),
+      journals: expandSubscriptionTerms(journals),
+      normalizedTerms,
       model: response.model,
       error: null,
     };

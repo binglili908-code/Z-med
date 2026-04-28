@@ -105,6 +105,35 @@ test("returns an empty pool when explicit preferences have no match", () => {
   assert.deepEqual(selected, []);
 });
 
+test("broad vascular preferences do not match psychiatric papers by abstract-only mentions", () => {
+  const selected = selectPersonalizedWeeklyPushPool(
+    [
+      paper({
+        id: "psychiatry-vascular-abstract",
+        title: "Psychosis treatment response study",
+        abstract: "We evaluate vascular risk factors in a psychiatry cohort.",
+        keywords: ["psychosis"],
+        mesh_terms: ["Schizophrenia"],
+        quality_score: 0.99,
+      }),
+      paper({
+        id: "vascular-title",
+        title: "Vascular surgery outcomes after endovascular repair",
+        abstract: "A registry study.",
+        keywords: ["vascular surgery"],
+        mesh_terms: ["Vascular Surgical Procedures"],
+        quality_score: 0.8,
+      }),
+    ],
+    profile({ subscription_normalized_keywords: ["vascular"] }),
+  );
+
+  assert.deepEqual(
+    selected.map((item) => item.id),
+    ["vascular-title"],
+  );
+});
+
 test("topic fallback keeps keyword matches when strict journal plus keyword pool is empty", () => {
   const selected = selectTopicFallbackWeeklyPushPool(
     [

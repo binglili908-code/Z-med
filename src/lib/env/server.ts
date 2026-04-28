@@ -61,6 +61,17 @@ function requiredEnum<T extends [string, ...string[]]>(name: string, values: T) 
   );
 }
 
+function optionalEnum<T extends [string, ...string[]]>(name: string, values: T) {
+  return z.preprocess(
+    emptyToUndefined,
+    z
+      .enum(values, {
+        message: `${name} must be one of: ${values.join(", ")}`,
+      })
+      .optional(),
+  );
+}
+
 function extractEmailAddress(value: string) {
   const trimmed = value.trim();
   const displayNameMatch = trimmed.match(/<([^<>]+)>$/);
@@ -95,6 +106,10 @@ export const serverEnvSchema = z
       "compare",
     ]),
     PUBMED_QUERY_ASSIST_ENABLED: requiredEnum("PUBMED_QUERY_ASSIST_ENABLED", [
+      "true",
+      "false",
+    ]),
+    MEDICAL_QUERY_PLANNER_ENABLED: optionalEnum("MEDICAL_QUERY_PLANNER_ENABLED", [
       "true",
       "false",
     ]),

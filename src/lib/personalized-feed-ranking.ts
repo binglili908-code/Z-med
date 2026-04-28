@@ -1,6 +1,7 @@
 import {
   buildSearchText,
   expandSubscriptionTerms,
+  hasBroadTopicTerm,
   journalMatchesAnyTerm,
   textMatchesAnyTerm,
 } from "@/lib/subscription-matching";
@@ -82,10 +83,17 @@ function hasKeywordSignal(signals: MatchSignals) {
   return signals.title || signals.abstract || signals.metadata || signals.aiAnalysis;
 }
 
+function hasStrongKeywordSignal(signals: MatchSignals) {
+  return signals.title || signals.metadata;
+}
+
 function matchesRequiredPreferenceGroups(signals: MatchSignals, terms: FeedProfileTerms) {
   const requiresKeyword = terms.keywords.length > 0;
   const requiresJournal = terms.journals.length > 0;
   if (!requiresKeyword && !requiresJournal) return true;
+  if (requiresKeyword && hasBroadTopicTerm(terms.keywords) && !hasStrongKeywordSignal(signals)) {
+    return false;
+  }
   return (!requiresKeyword || hasKeywordSignal(signals)) && (!requiresJournal || signals.journal);
 }
 
@@ -159,6 +167,7 @@ export function scoreTopicFallbackPaperForProfile(
   if (!terms.keywords.length) return null;
   const signals = paperMatchSignals(paper, terms);
   if (!hasKeywordSignal(signals)) return null;
+  if (hasBroadTopicTerm(terms.keywords) && !hasStrongKeywordSignal(signals)) return null;
 
   const now = options.now ?? new Date();
   const finalScore =

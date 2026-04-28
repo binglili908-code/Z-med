@@ -131,6 +131,42 @@ test("no-match preferences do not receive unrelated precision papers", () => {
   assert.equal(ranked, null);
 });
 
+test("broad vascular preferences ignore abstract-only psychiatric mentions", () => {
+  const terms = buildFeedProfileTerms(
+    profileStatus({
+      keywords: ["\u8840\u7ba1"],
+      matchingKeywords: ["vascular"],
+    }),
+  );
+
+  const ranked = rankPersonalizedFeedPapers(
+    [
+      paper({
+        id: "psychiatry-abstract",
+        title: "Psychosis treatment response study",
+        abstract: "This psychiatry cohort includes vascular risk factors.",
+        keywords: ["psychosis"],
+        mesh_terms: ["Schizophrenia"],
+        quality_score: 99,
+      }),
+      paper({
+        id: "vascular-title",
+        title: "Vascular surgery outcomes after endovascular repair",
+        keywords: ["vascular surgery"],
+        mesh_terms: ["Vascular Surgical Procedures"],
+        quality_score: 80,
+      }),
+    ],
+    terms,
+    { now: NOW },
+  );
+
+  assert.deepEqual(
+    ranked.map((item) => item.id),
+    ["vascular-title"],
+  );
+});
+
 test("when journal and keyword are both configured, both groups are required", () => {
   const terms = buildFeedProfileTerms(
     profileStatus({
