@@ -151,7 +151,7 @@ type DailyPaperView = {
 };
 
 function parseDate(date: string | null) {
-  return date ?? "Today";
+  return date ?? "日期未知";
 }
 
 function resolveAbstractEn(abstractEn: string | null, fallbackDate: string) {
@@ -206,13 +206,13 @@ function toDailyPaperView(p: FeedPaper): DailyPaperView {
 
 const fallbackPaper: DailyPaperView = {
   id: "fallback",
-  title: "正在获取今日最新文献…",
+  title: "正在获取本周精选文献…",
   titleZh: null,
   journal: "PubMed",
   journalIf: null,
   journalJcr: null,
   journalCasZone: null,
-  date: "Today",
+  date: "本周",
   qualityScore: null,
   qualityTier: null,
   pubmedUrl: "https://pubmed.ncbi.nlm.nih.gov/",
@@ -234,7 +234,7 @@ const exactMatchEmptyPaper: DailyPaperView = {
   journalIf: null,
   journalJcr: null,
   journalCasZone: null,
-  date: "Today",
+  date: "本周",
   qualityScore: null,
   qualityTier: null,
   pubmedUrl: "https://pubmed.ncbi.nlm.nih.gov/",
@@ -600,7 +600,7 @@ export function DailyPaperModule() {
     if (digestSendState === "sending") return "发送中…";
     if (digestSendState === "sent") return "已发送";
     if (digestSendState === "error") return "发送失败，重试";
-    return "发送本期7篇到我的邮箱";
+    return "发送本周7篇到我的邮箱";
   }, [digestSendState]);
 
   const previewSummary = React.useCallback((text: string) => {
@@ -898,7 +898,7 @@ export function DailyPaperModule() {
           <Sparkles className="w-5 h-5" />
         </span>
         <h2 className="text-lg font-bold text-slate-900 tracking-tight">
-          AI 每日速递 (Daily Top)
+          AI每周速递 (Weekly Top)
         </h2>
         <a
           href={paper.pubmedUrl}

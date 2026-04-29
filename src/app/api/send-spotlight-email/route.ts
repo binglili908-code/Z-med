@@ -106,8 +106,8 @@ export async function POST(req: Request) {
       to: emailTo,
       subject: getDailySpotlightEmailSubject(),
       items,
-      heading: "今日首页精选 7 篇文献",
-      intro: "这是 Z-Lab AI 为您精选的本期 7 篇文献（5 篇相关 + 1 篇热点 + 1 篇拓展），内容与首页保持同源。",
+      heading: "本周首页精选 7 篇文献",
+      intro: "这是 Z-Lab AI 为您精选的本周 7 篇文献（5 篇相关 + 1 篇热点 + 1 篇拓展），内容与首页保持同源。",
     });
   } catch (error) {
     return NextResponse.json(

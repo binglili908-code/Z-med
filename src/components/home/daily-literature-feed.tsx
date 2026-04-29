@@ -10,7 +10,7 @@ const featured = {
   title:
     "Foundation model for multimodal clinical reasoning improves triage and reporting (占位标题)",
   venue: "Nature Medicine",
-  date: "Today",
+  date: "This Week",
   abstract:
     "摘要占位：这篇工作提出了一个面向临床多模态（影像+病历）推理的统一框架，并在多中心数据上验证其可迁移性与安全性。",
   ai: {
@@ -44,10 +44,10 @@ export function DailyLiteratureFeed() {
     <section className="space-y-6">
       <div>
         <div className="text-xs font-semibold tracking-[0.18em] text-slate-500">
-          TODAY&apos;S LITERATURE FEED &amp; AI SUMMARIES
+          WEEKLY LITERATURE DIGEST &amp; AI SUMMARIES
         </div>
         <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
-          每日文献与 AI 总结
+          每周文献与 AI 总结
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
           将论文要点结构化为可直接决策的信息：临床实用性、算法类型与数据规模等（占位说明）。
@@ -58,7 +58,7 @@ export function DailyLiteratureFeed() {
         <CardHeader className="border-b border-slate-200 bg-gradient-to-br from-slate-50 to-white">
           <CardTitle className="flex flex-wrap items-center gap-2">
             <FileText className="h-4 w-4 text-slate-700" />
-            FEATURED DAILY PAPER
+            FEATURED WEEKLY PAPER
             <Badge className="ml-auto">{featured.venue}</Badge>
             <Badge tone="brand">{featured.date}</Badge>
           </CardTitle>

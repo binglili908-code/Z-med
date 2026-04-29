@@ -117,7 +117,7 @@ export function buildSpotlightDigestHtml(
 }
 
 export function getDailySpotlightEmailSubject() {
-  return "今日精选 7 篇文献（含中文摘要）";
+  return "本周首页精选 7 篇文献（含中文摘要）";
 }
 
 export function getWeeklySpotlightEmailSubject(issueWeekStart: string) {
