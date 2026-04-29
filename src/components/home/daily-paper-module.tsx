@@ -150,6 +150,8 @@ type DailyPaperView = {
   recommendationReason: string | null;
 };
 
+type SummaryLanguage = "en" | "zh";
+
 function parseDate(date: string | null) {
   return date ?? "日期未知";
 }
@@ -320,7 +322,6 @@ export function DailyPaperModule() {
   );
   const [spotlightError, setSpotlightError] = React.useState<string | null>(null);
   const [spotlightRefreshKey, setSpotlightRefreshKey] = React.useState(0);
-  const [canTranslate, setCanTranslate] = React.useState(false);
   const [digestSendState, setDigestSendState] = React.useState<"idle" | "sending" | "sent" | "error">("idle");
   const [translateState, setTranslateState] = React.useState<Record<string, "idle" | "translating" | "done" | "error">>({});
   const [lastSendMessage, setLastSendMessage] = React.useState<string | null>(null);
@@ -335,6 +336,7 @@ export function DailyPaperModule() {
   const [subscriptionNormalizationLoading, setSubscriptionNormalizationLoading] = React.useState(false);
   const [subscriptionNormalizationMessage, setSubscriptionNormalizationMessage] = React.useState<string | null>(null);
   const [expandedSummaryIds, setExpandedSummaryIds] = React.useState<Record<string, boolean>>({});
+  const [summaryLanguageById, setSummaryLanguageById] = React.useState<Record<string, SummaryLanguage>>({});
   const authRedirect = React.useMemo(
     () => buildRedirectTarget(pathname, searchParams.toString()),
     [pathname, searchParams],
@@ -483,6 +485,7 @@ export function DailyPaperModule() {
       setBrowsePage(1);
       setBrowseTotalPages(1);
       setExpandedSummaryIds({});
+      setSummaryLanguageById({});
       setDigestSendState("idle");
       setTranslateState({});
     } catch (error) {
@@ -494,15 +497,6 @@ export function DailyPaperModule() {
       );
     }
   }, [applySpotlightCache, getSessionInfo]);
-
-  const loadTranslateAvailability = React.useCallback(async () => {
-    try {
-      const token = await getAccessToken();
-      setCanTranslate(Boolean(token));
-    } catch {
-      setCanTranslate(false);
-    }
-  }, [getAccessToken]);
 
   const loadBrowse = React.useCallback(
     async (page: number) => {
@@ -540,10 +534,6 @@ export function DailyPaperModule() {
   React.useEffect(() => {
     void loadFeed();
   }, [loadFeed, spotlightRefreshKey]);
-
-  React.useEffect(() => {
-    void loadTranslateAvailability();
-  }, [loadTranslateAvailability]);
 
   const showDevPanel = isDevPanelEmail(currentUserEmail);
 
@@ -637,20 +627,20 @@ export function DailyPaperModule() {
     [expandedSummaryIds],
   );
 
-  const isTranslatedSummaryVisible = React.useCallback(
-    (item: DailyPaperView) => translateState[item.id] === "done" && Boolean(item.abstractZh?.trim()),
-    [translateState],
+  const isChineseSummaryVisible = React.useCallback(
+    (item: DailyPaperView) => summaryLanguageById[item.id] === "zh" && Boolean(item.abstractZh?.trim()),
+    [summaryLanguageById],
   );
 
   const summaryText = React.useCallback(
     (item: DailyPaperView) =>
-      isTranslatedSummaryVisible(item) ? item.abstractZh?.trim() || item.abstractEn : item.abstractEn,
-    [isTranslatedSummaryVisible],
+      isChineseSummaryVisible(item) ? item.abstractZh?.trim() || item.abstractEn : item.abstractEn,
+    [isChineseSummaryVisible],
   );
 
   const summaryHeading = React.useCallback(
-    (item: DailyPaperView) => (isTranslatedSummaryVisible(item) ? "中文摘要" : "English Abstract"),
-    [isTranslatedSummaryVisible],
+    (item: DailyPaperView) => (isChineseSummaryVisible(item) ? "中文摘要" : "English Abstract"),
+    [isChineseSummaryVisible],
   );
 
   const handleSelfCheck = React.useCallback(async () => {
@@ -841,24 +831,25 @@ export function DailyPaperModule() {
     );
   }, []);
 
-  const handleTranslateWithMine = React.useCallback(
+  const ensureChineseSummary = React.useCallback(
     async (paperId: string) => {
       const target =
         paper.id === paperId
           ? paper
           : items.find((x) => x.id === paperId) ?? browseItems.find((x) => x.id === paperId);
       if (target?.titleZh && target.abstractZh) {
-        setLastSendMessage("该文献已有中文翻译，已直接展示。");
+        setLastSendMessage("已切换为中文摘要。");
         setTranslateState((prev) => ({ ...prev, [paperId]: "done" }));
-        return;
+        return true;
       }
       setTranslateState((prev) => ({ ...prev, [paperId]: "translating" }));
       try {
         const token = await getAccessToken();
         if (!token) {
           setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
-          setLastSendMessage("请先登录后使用翻译功能。");
-          return;
+          setLastSendMessage("请先登录后生成中文摘要。");
+          router.push(buildSignInPath(authRedirect));
+          return false;
         }
         const res = await fetch(`/api/papers/${paperId}/translate`, {
           method: "POST",
@@ -873,20 +864,38 @@ export function DailyPaperModule() {
         };
         if (!res.ok) {
           setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
-          setLastSendMessage(payload.error ?? "翻译失败");
-          return;
+          setLastSendMessage(payload.error ?? "中文摘要生成失败");
+          return false;
         }
         applyTranslatedResult(paperId, payload.title_zh ?? "", payload.abstract_zh ?? "");
         setTranslateState((prev) => ({ ...prev, [paperId]: "done" }));
         setLastSendMessage(
-          payload.message ?? (payload.fallback_to_english ? "模型不可用，已回退展示英文原文。" : "已完成中文翻译。"),
+          payload.message ?? (payload.fallback_to_english ? "模型不可用，已回退展示英文原文。" : "已准备好中文摘要。"),
         );
+        return true;
       } catch {
         setTranslateState((prev) => ({ ...prev, [paperId]: "error" }));
-        setLastSendMessage("翻译请求失败");
+        setLastSendMessage("中文摘要生成请求失败");
+        return false;
       }
     },
-    [applyTranslatedResult, browseItems, getAccessToken, items, paper],
+    [applyTranslatedResult, authRedirect, browseItems, getAccessToken, items, paper, router],
+  );
+
+  const handleToggleSummaryLanguage = React.useCallback(
+    async (paperId: string) => {
+      if (summaryLanguageById[paperId] === "zh") {
+        setSummaryLanguageById((prev) => ({ ...prev, [paperId]: "en" }));
+        setLastSendMessage("已切换为英文摘要。");
+        return;
+      }
+
+      const ready = await ensureChineseSummary(paperId);
+      if (ready) {
+        setSummaryLanguageById((prev) => ({ ...prev, [paperId]: "zh" }));
+      }
+    },
+    [ensureChineseSummary, summaryLanguageById],
   );
 
   return (
@@ -994,23 +1003,23 @@ export function DailyPaperModule() {
         {paper.recommendationReason ? (
           <p className="mb-2 text-xs text-slate-500">{paper.recommendationReason}</p>
         ) : null}
-        <button
-          type="button"
-          onClick={() => toggleSummary(paper.id)}
-          className="mt-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-        >
-          {isSummaryExpanded(paper.id) ? "收起摘要" : "摘要"}
-        </button>
-        {canTranslate ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => void handleTranslateWithMine(paper.id)}
-            disabled={translateState[paper.id] === "translating"}
-            className="ml-2 mt-1 rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+            onClick={() => toggleSummary(paper.id)}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
           >
-            {translateState[paper.id] === "translating" ? "翻译中..." : "翻译为中文"}
+            {isSummaryExpanded(paper.id) ? "收起摘要" : "展开摘要"}
           </button>
-        ) : null}
+          <button
+            type="button"
+            onClick={() => void handleToggleSummaryLanguage(paper.id)}
+            disabled={translateState[paper.id] === "translating"}
+            className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+          >
+            切换中/英文摘要
+          </button>
+        </div>
       </div>
 
       <div className="mb-4">
@@ -1075,30 +1084,30 @@ export function DailyPaperModule() {
                 {it.titleZh ? (
                   <div className="mt-1 text-xs font-medium text-slate-600">{it.titleZh}</div>
                 ) : null}
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <div className="text-xs text-slate-500">
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 flex-1 text-xs text-slate-500">
                   {it.journal} · {it.date}
                   {(it.qualityTier ?? "").toLowerCase() === "top" ? " · Top Tier" : ""}
                   {sourceTypeLabel(it.sourceType) ? ` · ${sourceTypeLabel(it.sourceType)}` : ""}
                   {it.recommendationReason ? ` · ${it.recommendationReason}` : ""}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => toggleSummary(it.id)}
-                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  {isSummaryExpanded(it.id) ? "收起摘要" : "摘要"}
-                </button>
-                {canTranslate ? (
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => void handleTranslateWithMine(it.id)}
+                    onClick={() => toggleSummary(it.id)}
+                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    {isSummaryExpanded(it.id) ? "收起摘要" : "展开摘要"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleSummaryLanguage(it.id)}
                     disabled={translateState[it.id] === "translating"}
                     className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    {translateState[it.id] === "translating" ? "翻译中..." : "翻译为中文"}
+                    切换中/英文摘要
                   </button>
-                ) : null}
+                </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
                 {it.journalIf != null ? (
@@ -1175,28 +1184,28 @@ export function DailyPaperModule() {
                   >
                     {it.title}
                   </a>
-                  <div className="mt-2 flex items-center justify-between gap-3">
-                    <div className="text-xs text-slate-500">
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 flex-1 text-xs text-slate-500">
                       {it.journal} · {it.date}
                       {(it.qualityTier ?? "").toLowerCase() === "top" ? " · Top Tier" : ""}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => toggleSummary(`browse-${it.id}`)}
-                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                    >
-                      {isSummaryExpanded(`browse-${it.id}`) ? "收起摘要" : "摘要"}
-                    </button>
-                    {canTranslate ? (
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => void handleTranslateWithMine(it.id)}
+                        onClick={() => toggleSummary(`browse-${it.id}`)}
+                        className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        {isSummaryExpanded(`browse-${it.id}`) ? "收起摘要" : "展开摘要"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleSummaryLanguage(it.id)}
                         disabled={translateState[it.id] === "translating"}
                         className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
                       >
-                        {translateState[it.id] === "translating" ? "翻译中..." : "翻译为中文"}
+                        切换中/英文摘要
                       </button>
-                    ) : null}
+                    </div>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {it.journalIf != null ? (

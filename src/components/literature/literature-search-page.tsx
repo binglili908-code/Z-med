@@ -1,12 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 
 import { Container } from "@/components/site/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { buildRedirectTarget, buildSignInPath } from "@/lib/auth-navigation";
 import { fetchWithClientTimeout } from "@/lib/client-fetch";
+import { getBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 type SearchPaper = {
   id: string;
@@ -35,6 +37,22 @@ type SearchCacheEntry = {
   items: SearchPaper[];
 };
 
+type TranslationState = "idle" | "translating" | "done" | "error";
+
+type AbstractLanguage = "en" | "zh";
+
+type TranslatedPaperFields = {
+  title_zh?: string | null;
+  abstract_zh?: string | null;
+};
+
+type TranslationResponse = TranslatedPaperFields & {
+  ok?: boolean;
+  error?: string;
+  fallback_to_english?: boolean;
+  message?: string;
+};
+
 const searchResultCache = new Map<string, SearchCacheEntry>();
 const MAX_SEARCH_CACHE_ENTRIES = 20;
 
@@ -43,6 +61,25 @@ function previewText(text: string | null, fallback = "暂无摘要") {
   if (!normalized) return fallback;
   if (normalized.length <= 220) return normalized;
   return `${normalized.slice(0, 220)}…`;
+}
+
+function defaultAbstractLanguage(item: SearchPaper) {
+  return item.abstract_zh?.trim() ? "zh" : "en";
+}
+
+function getAbstractText(item: SearchPaper, language: AbstractLanguage) {
+  const primary = language === "zh" ? item.abstract_zh : item.abstract;
+  const fallback = language === "zh" ? item.abstract : item.abstract_zh;
+  return (primary || fallback || "").trim();
+}
+
+function mergeTranslatedPaper(item: SearchPaper, translated?: TranslatedPaperFields) {
+  if (!translated) return item;
+  return {
+    ...item,
+    title_zh: translated.title_zh ?? item.title_zh,
+    abstract_zh: translated.abstract_zh ?? item.abstract_zh,
+  };
 }
 
 function buildSearchParams(input: {
@@ -150,7 +187,9 @@ function getSearchErrorMessage(error: unknown) {
 
 export function LiteratureSearchPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
+  const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
   const initialQ = (searchParams.get("q") ?? "").trim();
   const initialTier = (searchParams.get("tier") ?? "").trim();
   const initialOa = searchParams.get("oa") === "true";
@@ -187,6 +226,11 @@ export function LiteratureSearchPage() {
   const [items, setItems] = React.useState<SearchPaper[]>(cachedInitialSearch?.items ?? []);
   const [searchError, setSearchError] = React.useState<string | null>(null);
   const [retryKey, setRetryKey] = React.useState(0);
+  const [expandedAbstractIds, setExpandedAbstractIds] = React.useState<Record<string, boolean>>({});
+  const [abstractLanguageById, setAbstractLanguageById] = React.useState<Record<string, AbstractLanguage>>({});
+  const [translatedPapers, setTranslatedPapers] = React.useState<Record<string, TranslatedPaperFields>>({});
+  const [translationState, setTranslationState] = React.useState<Record<string, TranslationState>>({});
+  const [translationMessage, setTranslationMessage] = React.useState<string | null>(null);
   const highlightTerms = React.useMemo(() => normalizeHighlightTerms(initialQ), [initialQ]);
   const ifRangeLabel = React.useMemo(
     () => formatIfRangeLabel(initialIfMin, initialIfMax),
@@ -195,6 +239,18 @@ export function LiteratureSearchPage() {
   const hasActiveFilters = Boolean(
     initialQ || initialTier || initialOa || initialFrom || initialTo || initialIfMin || initialIfMax,
   );
+  const authRedirect = React.useMemo(
+    () => buildRedirectTarget(pathname, searchParams.toString()),
+    [pathname, searchParams],
+  );
+
+  const getAccessToken = React.useCallback(async () => {
+    if (!supabase) return null;
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session?.access_token ?? null;
+  }, [supabase]);
 
   React.useEffect(() => {
     setQuery(initialQ);
@@ -205,6 +261,72 @@ export function LiteratureSearchPage() {
     setIfMin(initialIfMin);
     setIfMax(initialIfMax);
   }, [initialFrom, initialIfMax, initialIfMin, initialOa, initialQ, initialTier, initialTo]);
+
+  const toggleAbstract = React.useCallback((paperId: string) => {
+    setExpandedAbstractIds((prev) => ({ ...prev, [paperId]: !prev[paperId] }));
+  }, []);
+
+  const toggleAbstractLanguage = React.useCallback(
+    async (paperId: string) => {
+      const existingItem = items.find((item) => item.id === paperId);
+      const displayItem = existingItem ? mergeTranslatedPaper(existingItem, translatedPapers[paperId]) : null;
+      const existing = displayItem ?? translatedPapers[paperId];
+
+      const currentLanguage = abstractLanguageById[paperId] ?? (displayItem ? defaultAbstractLanguage(displayItem) : "en");
+      if (currentLanguage === "zh") {
+        setAbstractLanguageById((prev) => ({ ...prev, [paperId]: "en" }));
+        setTranslationMessage("已切换为英文摘要。");
+        return;
+      }
+
+      if (existing?.abstract_zh?.trim()) {
+        setTranslationState((prev) => ({ ...prev, [paperId]: "done" }));
+        setTranslationMessage("已切换为中文摘要。");
+        setAbstractLanguageById((prev) => ({ ...prev, [paperId]: "zh" }));
+        return;
+      }
+
+      setTranslationState((prev) => ({ ...prev, [paperId]: "translating" }));
+      setTranslationMessage(null);
+      try {
+        const token = await getAccessToken();
+        if (!token) {
+          setTranslationState((prev) => ({ ...prev, [paperId]: "error" }));
+          setTranslationMessage("请先登录后生成中文摘要。");
+          router.push(buildSignInPath(authRedirect));
+          return;
+        }
+
+        const res = await fetch(`/api/papers/${paperId}/translate`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = (await res.json().catch(() => ({}))) as TranslationResponse;
+        if (!res.ok) {
+          setTranslationState((prev) => ({ ...prev, [paperId]: "error" }));
+          setTranslationMessage(payload.error ?? "中文摘要生成失败，请稍后重试。");
+          return;
+        }
+
+        setTranslatedPapers((prev) => ({
+          ...prev,
+          [paperId]: {
+            title_zh: payload.title_zh ?? existing?.title_zh,
+            abstract_zh: payload.abstract_zh ?? existing?.abstract_zh,
+          },
+        }));
+        setAbstractLanguageById((prev) => ({ ...prev, [paperId]: "zh" }));
+        setTranslationState((prev) => ({ ...prev, [paperId]: "done" }));
+        setTranslationMessage(
+          payload.message ?? (payload.fallback_to_english ? "模型不可用，已回退展示英文原文。" : "已准备好中文摘要。"),
+        );
+      } catch {
+        setTranslationState((prev) => ({ ...prev, [paperId]: "error" }));
+        setTranslationMessage("中文摘要生成请求失败，请稍后重试。");
+      }
+    },
+    [abstractLanguageById, authRedirect, getAccessToken, items, router, translatedPapers],
+  );
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -219,6 +341,7 @@ export function LiteratureSearchPage() {
         setLoading(true);
       }
       setSearchError(null);
+      setTranslationMessage(null);
       try {
         const res = await fetchWithClientTimeout(`/api/papers/search?${activeSearchParams.toString()}`, {
           cache: "no-store",
@@ -416,6 +539,12 @@ export function LiteratureSearchPage() {
             </div>
           ) : null}
 
+          {translationMessage ? (
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {translationMessage}
+            </div>
+          ) : null}
+
           {!loading && !searchError && !items.length ? (
             <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center">
               <div className="text-base font-semibold text-slate-800">暂未找到匹配文献</div>
@@ -446,57 +575,92 @@ export function LiteratureSearchPage() {
           ) : null}
 
           <div className="mt-6 space-y-4">
-            {items.map((item) => (
-              <article key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                  <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-700">
-                    {item.journal ?? "PubMed"}
-                  </span>
-                  {item.quality_tier ? (
-                    <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-amber-700">
-                      {item.quality_tier}
-                    </span>
-                  ) : null}
-                  <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-sky-700">
-                    IF {formatIf(item.journal_if)}
-                  </span>
-                  <span className="rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-violet-700">
-                    中科院分区 {item.journal_cas_zone?.trim() || "暂无"}
-                  </span>
-                  <span>{item.publication_date ?? "日期未知"}</span>
-                  <span>{item.is_open_access ? "Open Access" : "Closed Access"}</span>
-                </div>
+            {items.map((item) => {
+              const displayItem = mergeTranslatedPaper(item, translatedPapers[item.id]);
+              const isAbstractExpanded = Boolean(expandedAbstractIds[item.id]);
+              const abstractLanguage = abstractLanguageById[item.id] ?? defaultAbstractLanguage(displayItem);
+              const abstractText = getAbstractText(displayItem, abstractLanguage);
+              const abstractDisplayText = isAbstractExpanded
+                ? abstractText || "暂无中英文摘要"
+                : previewText(abstractText, "暂无中英文摘要");
+              const currentTranslationState = translationState[item.id] ?? "idle";
 
-                <a
-                  href={item.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/"}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 block text-lg font-semibold leading-7 text-slate-900 hover:text-teal-700"
-                >
-                  {renderHighlightedText(item.title ?? "未命名文献", highlightTerms)}
-                </a>
-                {item.title_zh ? (
-                  <div className="mt-1 text-sm text-slate-600">
-                    {renderHighlightedText(item.title_zh, highlightTerms)}
+              return (
+                <article key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                    <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-700">
+                      {displayItem.journal ?? "PubMed"}
+                    </span>
+                    {displayItem.quality_tier ? (
+                      <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-amber-700">
+                        {displayItem.quality_tier}
+                      </span>
+                    ) : null}
+                    <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-sky-700">
+                      IF {formatIf(displayItem.journal_if)}
+                    </span>
+                    <span className="rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-violet-700">
+                      中科院分区 {displayItem.journal_cas_zone?.trim() || "暂无"}
+                    </span>
+                    <span>{displayItem.publication_date ?? "日期未知"}</span>
+                    <span>{displayItem.is_open_access ? "Open Access" : "Closed Access"}</span>
                   </div>
-                ) : null}
 
-                <p className="mt-3 text-sm leading-6 text-slate-700">
-                  {renderHighlightedText(
-                    previewText(item.abstract_zh || item.abstract, "暂无中英文摘要"),
-                    highlightTerms,
-                  )}
-                </p>
+                  <a
+                    href={displayItem.pubmed_url ?? "https://pubmed.ncbi.nlm.nih.gov/"}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 block text-lg font-semibold leading-7 text-slate-900 hover:text-teal-700"
+                  >
+                    {renderHighlightedText(displayItem.title ?? "未命名文献", highlightTerms)}
+                  </a>
+                  {displayItem.title_zh ? (
+                    <div className="mt-1 text-sm text-slate-600">
+                      {renderHighlightedText(displayItem.title_zh, highlightTerms)}
+                    </div>
+                  ) : null}
 
-                <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-500">
-                  {(item.keywords ?? []).slice(0, 4).map((keyword) => (
-                    <span key={`${item.id}-${keyword}`} className="rounded-full border border-slate-200 px-2 py-1">
-                      {renderHighlightedText(keyword, highlightTerms)}
-                    </span>
-                  ))}
-                </div>
-              </article>
-            ))}
+                  <p className="mt-3 text-sm leading-6 text-slate-700">
+                    {renderHighlightedText(abstractDisplayText, highlightTerms)}
+                  </p>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleAbstract(item.id)}
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      {isAbstractExpanded ? "收起摘要" : "展开摘要"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void toggleAbstractLanguage(item.id)}
+                      disabled={currentTranslationState === "translating"}
+                      className="rounded-lg border border-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      切换中/英文摘要
+                    </button>
+                    {currentTranslationState === "translating" ? (
+                      <span className="text-xs font-medium text-slate-500">正在准备中文摘要</span>
+                    ) : null}
+                    {currentTranslationState === "done" && abstractLanguage === "zh" ? (
+                      <span className="text-xs font-medium text-emerald-700">当前：中文摘要</span>
+                    ) : null}
+                    {currentTranslationState === "error" ? (
+                      <span className="text-xs font-medium text-rose-700">中文摘要生成失败，可重试</span>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-500">
+                    {(displayItem.keywords ?? []).slice(0, 4).map((keyword) => (
+                      <span key={`${item.id}-${keyword}`} className="rounded-full border border-slate-200 px-2 py-1">
+                        {renderHighlightedText(keyword, highlightTerms)}
+                      </span>
+                    ))}
+                  </div>
+                </article>
+              );
+            })}
           </div>
 
           {total > 0 ? (
