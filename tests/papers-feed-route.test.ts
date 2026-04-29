@@ -49,6 +49,7 @@ function makeDeps(overrides: Partial<FeedRouteDependencies> = {}): FeedRouteDepe
     getProfileSubscriptionStatus: async () => ({
       subscriptionEnabled: false,
       hasSubscriptionConfig: false,
+      excludeReviews: false,
       keywords: [],
       customJournals: [],
       matchingKeywords: [],
@@ -150,6 +151,7 @@ test("feed route returns personalized papers for subscribed users", async () => 
         return {
           subscriptionEnabled: true,
           hasSubscriptionConfig: true,
+          excludeReviews: false,
           keywords: ["pancreatic cancer"],
           customJournals: ["Nature"],
           matchingKeywords: ["pancreatic neoplasms"],

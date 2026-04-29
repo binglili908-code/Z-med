@@ -100,6 +100,7 @@ export const serverEnvSchema = z
     UNPAYWALL_EMAIL: requiredEmail("UNPAYWALL_EMAIL"),
     NCBI_EMAIL: requiredEmail("NCBI_EMAIL"),
     NCBI_API_KEY: requiredString("NCBI_API_KEY"),
+    SEMANTIC_SCHOLAR_API_KEY: optionalString(),
     PERSONALIZED_FEED_MODE: requiredEnum("PERSONALIZED_FEED_MODE", [
       "rpc",
       "app",

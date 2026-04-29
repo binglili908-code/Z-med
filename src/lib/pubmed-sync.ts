@@ -10,6 +10,7 @@ import {
   type DynamicMedicalContextScore,
 } from "@/lib/dynamic-medical-context-scoring";
 import { scoreAndUpsertPapers } from "@/lib/pubmed-paper-scoring";
+import { preserveFetchedPaperFields } from "@/lib/pubmed-paper-preservation";
 import type { MedicalQueryPlan } from "@/lib/medical-query-plan";
 import { planMedicalQuery } from "@/lib/medical-query-planner";
 import {
@@ -51,6 +52,7 @@ import {
   loadActiveJournals,
   loadActiveProfileKeywordRows,
   loadExistingPaperPmids,
+  loadExistingPaperSnapshots,
   loadJournalQualityMap,
   loadProfileSubscriptionKeywordRows,
   loadTopJournalTerms,
@@ -257,13 +259,16 @@ export async function runPubmedBackfillJob() {
   const supabase = createServiceSupabaseClient();
   const journalMap = await loadJournalQualityMap(supabase);
   const topJournalTerms = await loadTopJournalTerms(supabase);
-  const monthOffset = await readBackfillMonthOffset(supabase);
+  const backfillState = await readBackfillMonthOffset(supabase);
+  const monthOffset = backfillState.monthOffset;
   const { fromDate, toDate } = monthRangeByOffset(monthOffset);
 
   const query = buildTopJournalBackfillQuery(topJournalTerms, fromDate, toDate);
   if (!query) {
     return {
       monthOffset,
+      backfillStateUsedDefault: backfillState.usedDefault,
+      backfillStateReadError: backfillState.errorMessage,
       fromDate,
       toDate,
       fetchedCount: 0,
@@ -283,11 +288,18 @@ export async function runPubmedBackfillJob() {
   });
 
   const nextOffset = monthOffset >= 6 ? 1 : monthOffset + 1;
-  await writeBackfillMonthOffset(supabase, nextOffset);
+  const writeState = await writeBackfillMonthOffset(supabase, nextOffset);
+  if (!writeState.ok) {
+    throw new Error(
+      `Failed to advance PubMed backfill cursor: ${writeState.errorMessage ?? "unknown error"}`,
+    );
+  }
 
   return {
     monthOffset,
     nextOffset,
+    backfillStateUsedDefault: backfillState.usedDefault,
+    backfillStateReadError: backfillState.errorMessage,
     fromDate,
     toDate,
     fetchedCount: summaries.length,
@@ -424,8 +436,16 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
   };
   const isTimeBudgetExceeded = () => Date.now() - startedAt >= timeBudgetMs;
   const processedPaperDiagnostics: Array<Record<string, unknown>> = [];
+  const searchErrors: Array<Record<string, unknown>> = [];
+  const upsertErrors: Array<{ pmid: string; errorMessage: string | null }> = [];
   let processedPmidCount = 0;
   let stoppedEarlyDueToTimeBudget = false;
+  const errorSummary = () => ({
+    searchErrorCount: searchErrors.length,
+    searchErrors: options.includeDiagnostics ? searchErrors : searchErrors.slice(0, 10),
+    failedUpsertCount: upsertErrors.length,
+    upsertErrors: options.includeDiagnostics ? upsertErrors : upsertErrors.slice(0, 10),
+  });
   if (!keywordList.length) {
     return {
       keywordCount: 0,
@@ -445,6 +465,7 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       processedPmidCount: 0,
       truncatedNewPmids: false,
       stoppedEarlyDueToTimeBudget,
+      ...errorSummary(),
       elapsedMs: Date.now() - startedAt,
       options: responseOptions,
       processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
@@ -466,10 +487,19 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
   const plannerPlansByKeyword = new Map<string, MedicalQueryPlan>();
 
   for (const keyword of keywordList) {
+    if (isTimeBudgetExceeded()) {
+      stoppedEarlyDueToTimeBudget = true;
+      break;
+    }
+
     try {
       const plannerQueriesByWindow = new Map<number, string[]>();
 
       try {
+        if (isTimeBudgetExceeded()) {
+          stoppedEarlyDueToTimeBudget = true;
+          break;
+        }
         const plan = await planMedicalQuery([keyword], { cache: plannerCache });
         plannerPlansByKeyword.set(keyword, plan);
         for (const daysBack of syncWindows) {
@@ -526,6 +556,11 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       if (!hasPlannerQueries && !hasLegacyQuerySource) continue;
 
       for (const daysBack of syncWindows) {
+        if (isTimeBudgetExceeded()) {
+          stoppedEarlyDueToTimeBudget = true;
+          break;
+        }
+
         let windowQueries = plannerQueriesByWindow.get(daysBack) ?? [];
         if (!windowQueries.length) {
           const { data: queryData, error: qErr } = await buildPubmedQueryForKeyword(supabase, {
@@ -538,15 +573,24 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
         }
 
         for (const windowQuery of windowQueries) {
+          if (isTimeBudgetExceeded()) {
+            stoppedEarlyDueToTimeBudget = true;
+            break;
+          }
           if (!windowQuery) continue;
           const result = await pubmedEsearchAll({
             term: windowQuery,
             pageSize: 100,
             maxPages: daysBack <= 7 ? 6 : 10,
             maxRecords: daysBack <= 7 ? 600 : 1000,
+            shouldStop: isTimeBudgetExceeded,
           });
+          if (result.stoppedEarly) {
+            stoppedEarlyDueToTimeBudget = true;
+          }
           if (!result.ids.length) {
             await randomDelay(280, 420);
+            if (stoppedEarlyDueToTimeBudget) break;
             continue;
           }
 
@@ -557,14 +601,30 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
             totalCount: result.totalCount,
           });
           await randomDelay(280, 420);
+          if (stoppedEarlyDueToTimeBudget) break;
         }
+        if (stoppedEarlyDueToTimeBudget) break;
       }
-    } catch {
+    } catch (error) {
+      searchErrors.push({
+        keyword,
+        error: error instanceof Error ? error.message : "unknown keyword sync search error",
+      });
       continue;
     }
+    if (stoppedEarlyDueToTimeBudget) break;
   }
 
   const deduped = stats.getDedupedPmids();
+  if (!deduped.length && searchErrors.length) {
+    const sample = searchErrors
+      .slice(0, 3)
+      .map((item) => `${String(item.keyword)}: ${String(item.error)}`)
+      .join("; ");
+    throw new Error(
+      `PubMed keyword sync searches failed before finding candidates (${searchErrors.length} error(s)): ${sample}`,
+    );
+  }
   if (!deduped.length) {
     return {
       keywordCount: keywordList.length,
@@ -580,6 +640,7 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       processedPmidCount: 0,
       truncatedNewPmids: false,
       stoppedEarlyDueToTimeBudget,
+      ...errorSummary(),
       elapsedMs: Date.now() - startedAt,
       options: responseOptions,
       processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
@@ -608,11 +669,14 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       processedPmidCount: 0,
       truncatedNewPmids: false,
       stoppedEarlyDueToTimeBudget,
+      ...errorSummary(),
       elapsedMs: Date.now() - startedAt,
       options: responseOptions,
       processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,
     };
   }
+
+  const existingSnapshots = await loadExistingPaperSnapshots(supabase, pmidsToProcess);
 
   for (const pmidGroup of chunk(pmidsToProcess, KEYWORD_SYNC_PROCESSING_BATCH_SIZE)) {
     if (isTimeBudgetExceeded()) {
@@ -666,7 +730,12 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
       const qualityScore = dynamic.qualityScore;
       const oa = resolveOpenAccess
         ? await resolveOpenAccessByDoi(paper.doi)
-        : null;
+        : { resolved: false, is_open_access: false, oa_pdf_url: null };
+      const preserved = preserveFetchedPaperFields({
+        fetchedAbstract: paper.abstract,
+        openAccess: oa,
+        existing: existingSnapshots.get(paper.pmid),
+      });
 
       const topCoreEligible = tier !== "emerging";
       const recommendationDropReasons = [
@@ -698,7 +767,7 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
           recommendation_eligible: isAiMed,
           recommendation_drop_reasons: recommendationDropReasons,
           global_feed_exclusion_reasons: globalFeedExclusionReasons,
-          open_access_resolved: Boolean(oa),
+          open_access_resolved: oa.resolved,
           synced_at: new Date().toISOString(),
         },
       };
@@ -707,19 +776,15 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
         pmid: paper.pmid,
         doi: paper.doi ?? null,
         title: paper.title,
-        abstract: paper.abstract,
+        abstract: preserved.abstract,
         journal: paper.journal,
         publication_date: paper.publication_date,
         pubmed_url: paper.pubmed_url,
         authors: paper.authors,
         mesh_terms: paper.mesh_terms,
         keywords: paperKeywords,
-        ...(oa
-          ? {
-              is_open_access: oa.is_open_access,
-              oa_pdf_url: oa.oa_pdf_url,
-            }
-          : {}),
+        is_open_access: preserved.is_open_access,
+        oa_pdf_url: preserved.oa_pdf_url,
         ai_med_score: aiScoreForRanking,
         is_ai_med: isAiMed,
         quality_tier: tier,
@@ -761,9 +826,27 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
         })) {
           await upsertPaperRecommendationContext(supabase, contextRow);
         }
+      } else {
+        upsertErrors.push({
+          pmid: paper.pmid,
+          errorMessage: upsertResult.errorMessage,
+        });
       }
       await randomDelay(resolveOpenAccess ? 120 : 40, resolveOpenAccess ? 220 : 80);
     }
+  }
+
+  if (
+    upsertErrors.length > 0 &&
+    upsertErrors.length / Math.max(1, processedPmidCount) >= 0.5
+  ) {
+    const sample = upsertErrors
+      .slice(0, 3)
+      .map((item) => `${item.pmid}: ${item.errorMessage ?? "unknown"}`)
+      .join("; ");
+    throw new Error(
+      `PubMed keyword sync failed too many paper upserts (${upsertErrors.length}/${processedPmidCount}): ${sample}`,
+    );
   }
 
   return {
@@ -780,6 +863,7 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
     processedPmidCount,
     truncatedNewPmids: truncated || stoppedEarlyDueToTimeBudget,
     stoppedEarlyDueToTimeBudget,
+    ...errorSummary(),
     elapsedMs: Date.now() - startedAt,
     options: responseOptions,
     processedPapers: options.includeDiagnostics ? processedPaperDiagnostics : undefined,

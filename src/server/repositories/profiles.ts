@@ -11,6 +11,7 @@ type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "fr
 export type ProfileSubscriptionStatus = {
   subscriptionEnabled: boolean;
   hasSubscriptionConfig: boolean;
+  excludeReviews: boolean;
   keywords: string[];
   customJournals: string[];
   matchingKeywords: string[];
@@ -25,6 +26,7 @@ type ProfileSubscriptionRow = {
   is_active: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
+  exclude_reviews?: boolean | null;
   subscription_normalized_keywords?: string[] | null;
   subscription_normalized_journals?: string[] | null;
   subscription_normalized_at?: string | null;
@@ -33,6 +35,8 @@ type ProfileSubscriptionRow = {
 
 const LEGACY_SUBSCRIPTION_SELECT = "is_active,subscription_keywords,custom_journals";
 const NORMALIZED_SUBSCRIPTION_SELECT =
+  "is_active,subscription_keywords,custom_journals,exclude_reviews,subscription_normalized_keywords,subscription_normalized_journals,subscription_normalized_at,subscription_normalization_error";
+const NORMALIZED_SUBSCRIPTION_LEGACY_SELECT =
   "is_active,subscription_keywords,custom_journals,subscription_normalized_keywords,subscription_normalized_journals,subscription_normalized_at,subscription_normalization_error";
 const NORMALIZATION_BACKFILL_SELECT =
   "id,contact_email,is_active,subscription_keywords,custom_journals,subscription_normalization_model";
@@ -92,15 +96,29 @@ export async function getProfileSubscriptionStatus(
 
   let row: ProfileSubscriptionRow | null = null;
   if (normalizedQuery.error && isMissingColumnError(normalizedQuery.error)) {
-    const legacyQuery = await client
+    const normalizedLegacyQuery = await client
       .from("profiles")
-      .select(LEGACY_SUBSCRIPTION_SELECT)
+      .select(NORMALIZED_SUBSCRIPTION_LEGACY_SELECT)
       .eq("id", userId)
       .maybeSingle();
-    if (legacyQuery.error) {
-      throw new Error(`Failed to load profile subscription status: ${legacyQuery.error.message}`);
+    if (normalizedLegacyQuery.error && isMissingColumnError(normalizedLegacyQuery.error)) {
+      const legacyQuery = await client
+        .from("profiles")
+        .select(LEGACY_SUBSCRIPTION_SELECT)
+        .eq("id", userId)
+        .maybeSingle();
+      if (legacyQuery.error) {
+        throw new Error(`Failed to load profile subscription status: ${legacyQuery.error.message}`);
+      }
+      row = legacyQuery.data as ProfileSubscriptionRow | null;
+    } else {
+      if (normalizedLegacyQuery.error) {
+        throw new Error(
+          `Failed to load profile subscription status: ${normalizedLegacyQuery.error.message}`,
+        );
+      }
+      row = normalizedLegacyQuery.data as ProfileSubscriptionRow | null;
     }
-    row = legacyQuery.data as ProfileSubscriptionRow | null;
   } else {
     if (normalizedQuery.error) {
       throw new Error(`Failed to load profile subscription status: ${normalizedQuery.error.message}`);
@@ -118,6 +136,7 @@ export async function getProfileSubscriptionStatus(
     subscriptionEnabled,
     hasSubscriptionConfig:
       subscriptionEnabled && Boolean(keywords.length || customJournals.length),
+    excludeReviews: row?.exclude_reviews === true,
     keywords,
     customJournals,
     matchingKeywords: normalizedKeywords.length ? normalizedKeywords : keywords,
@@ -134,6 +153,7 @@ export async function getUserSubscription(
   const status = await getProfileSubscriptionStatus(client, userId);
   return {
     subscription_enabled: status.subscriptionEnabled,
+    exclude_reviews: status.excludeReviews,
     custom_journals: status.customJournals,
     keywords: status.keywords,
     normalized_custom_journals: status.matchingJournals,
@@ -152,16 +172,21 @@ export async function saveUserSubscription(
   const customJournals = normalizeStringList(input.custom_journals);
   const keywords = normalizeStringList(input.keywords);
   const subscriptionEnabled = input.subscription_enabled !== false;
+  const excludeReviews = input.exclude_reviews === true;
   const normalizedKeywords = normalizeStringList(normalized?.keywords);
   const normalizedJournals = normalizeStringList(normalized?.journals);
   const normalizedAt = normalized ? new Date().toISOString() : null;
 
-  const basePayload = {
+  const legacyPayload = {
     id: userId,
     is_active: subscriptionEnabled,
     subscription_keywords: keywords,
     custom_journals: customJournals,
     updated_at: new Date().toISOString(),
+  };
+  const basePayload = {
+    ...legacyPayload,
+    exclude_reviews: excludeReviews,
   };
 
   const extendedPayload = normalized
@@ -180,10 +205,10 @@ export async function saveUserSubscription(
     .from("profiles")
     .upsert(extendedPayload, { onConflict: "id" });
 
-  if (error && normalized && isMissingColumnError(error)) {
+  if (error && isMissingColumnError(error)) {
     const fallback = await client
       .from("profiles")
-      .upsert(basePayload, { onConflict: "id" });
+      .upsert(legacyPayload, { onConflict: "id" });
     error = fallback.error;
   }
 
@@ -194,6 +219,7 @@ export async function saveUserSubscription(
   return {
     ok: true,
     subscription_enabled: subscriptionEnabled,
+    exclude_reviews: excludeReviews,
     custom_journals: customJournals,
     keywords,
     normalized_custom_journals: normalizedJournals.length ? normalizedJournals : customJournals,

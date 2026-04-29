@@ -6,6 +6,7 @@ import {
   buildWeeklyPushDigestSelection,
   diversifyWeeklyPushCandidates,
 } from "@/lib/weekly-push-selection";
+import { filterReviewLikePapers } from "@/lib/paper-article-type";
 import {
   buildWeeklyPushDigestHtml,
   getWeeklyPushEmailSubject,
@@ -117,10 +118,18 @@ export async function runWeeklyPushJob() {
       userId: profile.id,
       paperIds: precisionCandidates.map((paper) => paper.id),
     });
-    const selection = buildWeeklyPushDigestSelection(precisionCandidates, profile, {
+    const profilePrecisionCandidates = filterReviewLikePapers(
+      precisionCandidates,
+      profile.exclude_reviews === true,
+    );
+    const profileFallbackCandidates = filterReviewLikePapers(
+      fallbackCandidates,
+      profile.exclude_reviews === true,
+    );
+    const selection = buildWeeklyPushDigestSelection(profilePrecisionCandidates, profile, {
       targetCount,
       deliveredPaperIds: deliveredSet,
-      fallbackCandidates,
+      fallbackCandidates: profileFallbackCandidates,
     });
     const personalized: WeeklyPushDigestPaper[] = [
       ...selection.exactSelected.map((paper) => ({

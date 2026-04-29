@@ -15,7 +15,7 @@ import type {
 type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "from" | "rpc">;
 
 export const FEED_PAPER_SELECT =
-  "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords";
+  "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,ai_med_score,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,mesh_terms,keywords,source_payload";
 
 export const SPOTLIGHT_PAPER_SELECT =
   "id,title,title_zh,journal_if,journal_jcr,journal_cas_zone,abstract,abstract_zh,journal,publication_date,quality_score,quality_tier,pubmed_url,is_open_access,oa_pdf_url,ai_analysis,keywords,mesh_terms";
@@ -40,6 +40,7 @@ export type DbPaper = {
   ai_analysis: Record<string, unknown> | null;
   mesh_terms?: string[] | null;
   keywords?: string[] | null;
+  source_payload?: Record<string, unknown> | null;
   final_score?: number | null;
   recommendation_reason?: string | null;
   source_type?: RecommendationSourceType | string | null;

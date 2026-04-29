@@ -5,6 +5,7 @@ import {
   resolveOpenAccessByDoi,
   type PubmedSummary,
 } from "@/lib/pubmed-sync-client";
+import { preserveFetchedPaperFields } from "@/lib/pubmed-paper-preservation";
 import {
   AI_TERMS,
   MED_TERMS,
@@ -15,6 +16,7 @@ import {
 import {
   calculateAiMedScore,
   loadPaperIdsByPmids,
+  loadExistingPaperSnapshots,
   loadResearchTopicRefs,
   resolveJournalQuality,
   upsertPaperResearchTopicRows,
@@ -107,6 +109,10 @@ export async function scoreAndUpsertPapers(args: {
 }) {
   const upsertRows: Record<string, unknown>[] = [];
   const topicRefRows = await loadResearchTopicRefs(args.supabase);
+  const existingSnapshots = await loadExistingPaperSnapshots(
+    args.supabase,
+    args.summaries.map((paper) => paper.pmid),
+  );
   const topicIdMap = new Map<string, string>();
   const topicRules = buildTopicRulesFromSlugs((topicRefRows ?? []).map((r) => r.slug));
   for (const r of topicRefRows ?? []) {
@@ -137,11 +143,16 @@ export async function scoreAndUpsertPapers(args: {
       journalMatched,
     });
     const oa = await resolveOpenAccessByDoi(paper.doi);
+    const preserved = preserveFetchedPaperFields({
+      fetchedAbstract: paper.abstract,
+      openAccess: oa,
+      existing: existingSnapshots.get(paper.pmid),
+    });
     upsertRows.push({
       pmid: paper.pmid,
       doi: paper.doi ?? null,
       title: paper.title,
-      abstract: paper.abstract,
+      abstract: preserved.abstract,
       journal: paper.journal,
       publication_date: paper.publication_date,
       pubmed_url: paper.pubmed_url,
@@ -155,8 +166,8 @@ export async function scoreAndUpsertPapers(args: {
       journal_if: quality.journalIf,
       journal_jcr: quality.journalJcr,
       journal_cas_zone: quality.journalCasZone,
-      is_open_access: oa.is_open_access,
-      oa_pdf_url: oa.oa_pdf_url,
+      is_open_access: preserved.is_open_access,
+      oa_pdf_url: preserved.oa_pdf_url,
       source_payload: paper.source_payload,
       fetched_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),

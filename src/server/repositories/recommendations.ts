@@ -7,6 +7,7 @@ export type RecommendationProfileRow = {
   is_active: boolean | null;
   subscription_keywords: string[] | null;
   custom_journals: string[] | null;
+  exclude_reviews?: boolean | null;
   subscription_normalized_keywords?: string[] | null;
   subscription_normalized_journals?: string[] | null;
 };
@@ -20,6 +21,7 @@ export type RecommendationCandidatePaperRow = {
   quality_score: number | null;
   quality_tier: string | null;
   ai_analysis: Record<string, unknown> | null;
+  source_payload?: Record<string, unknown> | null;
 };
 
 export type FeedRecommendationUpsertRow = {
@@ -35,6 +37,8 @@ export type FeedRecommendationUpsertRow = {
 const RECOMMENDATION_PROFILE_SELECT =
   "is_active,subscription_keywords,custom_journals";
 const RECOMMENDATION_PROFILE_NORMALIZED_SELECT =
+  "is_active,subscription_keywords,custom_journals,exclude_reviews,subscription_normalized_keywords,subscription_normalized_journals";
+const RECOMMENDATION_PROFILE_NORMALIZED_LEGACY_SELECT =
   "is_active,subscription_keywords,custom_journals,subscription_normalized_keywords,subscription_normalized_journals";
 
 export async function getRecommendationProfile(
@@ -48,15 +52,28 @@ export async function getRecommendationProfile(
     .maybeSingle();
 
   if (normalizedQuery.error && isMissingColumnError(normalizedQuery.error)) {
-    const legacyQuery = await client
+    const normalizedLegacyQuery = await client
       .from("profiles")
-      .select(RECOMMENDATION_PROFILE_SELECT)
+      .select(RECOMMENDATION_PROFILE_NORMALIZED_LEGACY_SELECT)
       .eq("id", userId)
       .maybeSingle();
-    if (legacyQuery.error) {
-      throw new Error(`Failed to load recommendation profile: ${legacyQuery.error.message}`);
+    if (normalizedLegacyQuery.error && isMissingColumnError(normalizedLegacyQuery.error)) {
+      const legacyQuery = await client
+        .from("profiles")
+        .select(RECOMMENDATION_PROFILE_SELECT)
+        .eq("id", userId)
+        .maybeSingle();
+      if (legacyQuery.error) {
+        throw new Error(`Failed to load recommendation profile: ${legacyQuery.error.message}`);
+      }
+      return (legacyQuery.data as RecommendationProfileRow | null) ?? null;
     }
-    return (legacyQuery.data as RecommendationProfileRow | null) ?? null;
+    if (normalizedLegacyQuery.error) {
+      throw new Error(
+        `Failed to load recommendation profile: ${normalizedLegacyQuery.error.message}`,
+      );
+    }
+    return (normalizedLegacyQuery.data as RecommendationProfileRow | null) ?? null;
   }
 
   if (normalizedQuery.error) {
@@ -69,7 +86,7 @@ export async function getRecommendationProfile(
 export async function listRecommendationCandidatePapers(client: SupabaseDbClient) {
   const { data, error } = await client
     .from("papers")
-    .select("id,title,abstract,abstract_zh,journal,quality_score,quality_tier,ai_analysis")
+    .select("id,title,abstract,abstract_zh,journal,quality_score,quality_tier,ai_analysis,source_payload")
     .eq("is_ai_med", true)
     .order("quality_score", { ascending: false });
   if (error) {

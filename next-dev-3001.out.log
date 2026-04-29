@@ -1,0 +1,11 @@
+
+> zlab-web@0.1.0 dev
+> next dev --port 3001
+
+   ▲ Next.js 15.5.15
+   - Local:        http://localhost:3001
+   - Network:      http://26.157.233.54:3001
+   - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 2.8s

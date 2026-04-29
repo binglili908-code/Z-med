@@ -9,6 +9,7 @@ import { getBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 type UserSubscription = {
   subscription_enabled: boolean;
+  exclude_reviews?: boolean;
   custom_journals: string[];
   keywords: string[];
   normalized_custom_journals?: string[];
@@ -23,6 +24,7 @@ export default function SettingsPage() {
   const [email, setEmail] = React.useState<string | null>(null);
   const [token, setToken] = React.useState<string | null>(null);
   const [subscriptionEnabled, setSubscriptionEnabled] = React.useState(true);
+  const [excludeReviews, setExcludeReviews] = React.useState(false);
   const [customJournals, setCustomJournals] = React.useState<string[]>([]);
   const [customJournalInput, setCustomJournalInput] = React.useState("");
   const [keywords, setKeywords] = React.useState<string[]>([]);
@@ -54,6 +56,7 @@ export default function SettingsPage() {
           if (subRes.ok) {
             const subJson = (await subRes.json()) as UserSubscription;
             setSubscriptionEnabled(subJson.subscription_enabled !== false);
+            setExcludeReviews(subJson.exclude_reviews === true);
             setCustomJournals(subJson.custom_journals ?? []);
             setKeywords(subJson.keywords ?? []);
           }
@@ -107,6 +110,7 @@ export default function SettingsPage() {
         },
         body: JSON.stringify({
           subscription_enabled: subscriptionEnabled,
+          exclude_reviews: excludeReviews,
           custom_journals: customJournals,
           keywords,
         } satisfies UserSubscription),
@@ -128,7 +132,7 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [customJournals, keywords, subscriptionEnabled, token]);
+  }, [customJournals, excludeReviews, keywords, subscriptionEnabled, token]);
 
 
   if (loading) {
@@ -195,6 +199,35 @@ export default function SettingsPage() {
           </div>
           <p className="mt-3 text-xs font-medium text-slate-500">
             当前状态：{subscriptionEnabled ? "已开启订阅" : "已关闭订阅"}
+          </p>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">过滤综述及荟萃分析</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                开启后，个性化推荐与每周订阅邮件会优先排除 Review、Systematic Review 和 Meta-Analysis。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setExcludeReviews((prev) => !prev)}
+              className={`inline-flex h-7 w-12 items-center rounded-full border transition-colors ${
+                excludeReviews ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-slate-300"
+              }`}
+              aria-pressed={excludeReviews}
+              aria-label="切换过滤综述"
+            >
+              <span
+                className={`mx-0.5 inline-block h-5 w-5 rounded-full bg-white transition-transform ${
+                  excludeReviews ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+          <p className="mt-3 text-xs font-medium text-slate-500">
+            当前状态：{excludeReviews ? "已过滤综述" : "保留综述"}
           </p>
         </div>
 

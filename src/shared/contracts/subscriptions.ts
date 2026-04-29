@@ -1,5 +1,6 @@
 export type UserSubscription = {
   subscription_enabled: boolean;
+  exclude_reviews?: boolean;
   custom_journals: string[];
   keywords: string[];
   normalized_custom_journals?: string[];

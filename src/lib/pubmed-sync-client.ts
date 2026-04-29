@@ -24,6 +24,7 @@ export type PubmedSummary = {
 };
 
 export type OpenAccessInfo = {
+  resolved: boolean;
   is_open_access: boolean;
   oa_pdf_url: string | null;
 };
@@ -39,6 +40,17 @@ function fetchPubmed(url: string, label: string) {
     retryDelayMs: 500,
     timeoutMs: PUBMED_TIMEOUT_MS,
   });
+}
+
+async function fetchRequiredPubmed(url: string, label: string) {
+  const res = await fetchPubmed(url, label);
+  if (!res) {
+    throw new Error(`${label} request failed`);
+  }
+  if (!res.ok) {
+    throw new Error(`${label} returned HTTP ${res.status}`);
+  }
+  return res;
 }
 
 function fetchUnpaywall(url: string) {
@@ -123,8 +135,7 @@ export async function pubmedEsearch(term: string, retmax: number) {
   addNcbiEnvParams(params);
 
   const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${params.toString()}`;
-  const res = await fetchPubmed(url, "PubMed esearch");
-  if (!res?.ok) return [];
+  const res = await fetchRequiredPubmed(url, "PubMed esearch");
   const json = (await res.json()) as any;
   const ids = json?.esearchresult?.idlist;
   if (!Array.isArray(ids)) return [];
@@ -147,8 +158,7 @@ async function pubmedEsearchPaged(args: {
   addNcbiEnvParams(params);
 
   const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${params.toString()}`;
-  const res = await fetchPubmed(url, "PubMed paged esearch");
-  if (!res?.ok) return { ids: [], totalCount: 0 };
+  const res = await fetchRequiredPubmed(url, "PubMed paged esearch");
   const json = (await res.json()) as any;
   const result = json?.esearchresult;
   const ids = Array.isArray(result?.idlist)
@@ -164,11 +174,17 @@ export async function pubmedEsearchAll(args: {
   pageSize: number;
   maxPages: number;
   maxRecords: number;
+  shouldStop?: () => boolean;
 }) {
   const collected: string[] = [];
   let retstart = 0;
   let totalCount = 0;
+  let stoppedEarly = false;
   for (let page = 0; page < args.maxPages; page += 1) {
+    if (args.shouldStop?.()) {
+      stoppedEarly = true;
+      break;
+    }
     if (collected.length >= args.maxRecords) break;
     const remaining = args.maxRecords - collected.length;
     const retmax = Math.min(args.pageSize, remaining);
@@ -189,6 +205,7 @@ export async function pubmedEsearchAll(args: {
   return {
     ids: dedupeIdList(collected).slice(0, args.maxRecords),
     totalCount,
+    stoppedEarly,
   };
 }
 
@@ -202,8 +219,7 @@ export async function pubmedEsummary(ids: string[]) {
   addNcbiEnvParams(params);
 
   const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?${params.toString()}`;
-  const res = await fetchPubmed(url, "PubMed esummary");
-  if (!res?.ok) return [] as PubmedSummary[];
+  const res = await fetchRequiredPubmed(url, "PubMed esummary");
   const json = (await res.json()) as any;
   const result = json?.result;
   if (!result || typeof result !== "object") return [] as PubmedSummary[];
@@ -253,23 +269,28 @@ export async function pubmedEsummary(ids: string[]) {
 }
 
 export async function resolveOpenAccessByDoi(doi?: string): Promise<OpenAccessInfo> {
-  if (!doi) return { is_open_access: false, oa_pdf_url: null };
+  if (!doi) return { resolved: false, is_open_access: false, oa_pdf_url: null };
   const email = process.env.UNPAYWALL_EMAIL || process.env.NCBI_EMAIL;
-  if (!email) return { is_open_access: false, oa_pdf_url: null };
+  if (!email) return { resolved: false, is_open_access: false, oa_pdf_url: null };
 
   const url = `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(email)}`;
   const res = await fetchUnpaywall(url);
-  if (!res?.ok) return { is_open_access: false, oa_pdf_url: null };
-  const json = (await res.json()) as any;
-  const isOa = Boolean(json?.is_oa);
-  const pdf =
-    asString(json?.best_oa_location?.url_for_pdf) ??
-    asString(json?.best_oa_location?.url) ??
-    null;
-  return {
-    is_open_access: isOa,
-    oa_pdf_url: isOa ? pdf : null,
-  };
+  if (!res?.ok) return { resolved: false, is_open_access: false, oa_pdf_url: null };
+  try {
+    const json = (await res.json()) as any;
+    const isOa = Boolean(json?.is_oa);
+    const pdf =
+      asString(json?.best_oa_location?.url_for_pdf) ??
+      asString(json?.best_oa_location?.url) ??
+      null;
+    return {
+      resolved: true,
+      is_open_access: isOa,
+      oa_pdf_url: isOa ? pdf : null,
+    };
+  } catch {
+    return { resolved: false, is_open_access: false, oa_pdf_url: null };
+  }
 }
 
 export function chunk<T>(arr: T[], size: number) {
@@ -317,8 +338,7 @@ async function pubmedEfetchAbstractMap(ids: string[]) {
   addNcbiEnvParams(params);
 
   const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?${params.toString()}`;
-  const res = await fetchPubmed(url, "PubMed efetch abstracts");
-  if (!res?.ok) return new Map<string, string>();
+  const res = await fetchRequiredPubmed(url, "PubMed efetch abstracts");
   const xml = await res.text();
   const map = new Map<string, string>();
   const articleBlocks = Array.from(xml.matchAll(/<PubmedArticle>[\s\S]*?<\/PubmedArticle>/gi));

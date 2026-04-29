@@ -30,6 +30,7 @@ import { validateFeedResponse } from "@/shared/contracts/papers.schema";
 const emptySubscriptionStatus: ProfileSubscriptionStatus = {
   subscriptionEnabled: false,
   hasSubscriptionConfig: false,
+  excludeReviews: false,
   keywords: [],
   customJournals: [],
   matchingKeywords: [],

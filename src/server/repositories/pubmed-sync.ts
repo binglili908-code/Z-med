@@ -86,6 +86,13 @@ export type PaperRecommendationContextRow = {
   updated_at: string;
 };
 
+export type ExistingPaperSnapshot = {
+  pmid: string;
+  abstract: string | null;
+  is_open_access: boolean | null;
+  oa_pdf_url: string | null;
+};
+
 const ACTIVE_PROFILE_KEYWORDS_SELECT =
   "subscription_keywords,subscription_mesh_terms,custom_journals,subscription_normalized_keywords,subscription_normalized_journals";
 const ACTIVE_PROFILE_KEYWORDS_LEGACY_SELECT =
@@ -329,6 +336,25 @@ export async function loadExistingPaperPmids(client: SupabaseDbClient, pmids: st
   return new Set((data ?? []).map((row) => row.pmid as string));
 }
 
+export async function loadExistingPaperSnapshots(
+  client: SupabaseDbClient,
+  pmids: string[],
+) {
+  if (!pmids.length) return new Map<string, ExistingPaperSnapshot>();
+
+  const { data, error } = await client
+    .from("papers")
+    .select("pmid,abstract,is_open_access,oa_pdf_url")
+    .in("pmid", pmids);
+  if (error) {
+    throw new Error(`Failed to load existing paper snapshots: ${error.message}`);
+  }
+
+  return new Map(
+    ((data ?? []) as ExistingPaperSnapshot[]).map((row) => [row.pmid, row]),
+  );
+}
+
 export async function upsertKeywordSyncedPaper(
   client: SupabaseDbClient,
   row: Record<string, unknown>,
@@ -359,12 +385,32 @@ export async function readBackfillMonthOffset(client: SupabaseDbClient) {
       .select("value")
       .eq("key", "backfill_6m_month_offset")
       .maybeSingle();
-    if (error) return 1;
+    if (error) {
+      return {
+        monthOffset: 1,
+        usedDefault: true,
+        errorMessage: error.message,
+      };
+    }
     const n = Number((data as { value?: string } | null)?.value ?? 1);
-    if (!Number.isFinite(n) || n < 1 || n > 6) return 1;
-    return n;
-  } catch {
-    return 1;
+    if (!Number.isFinite(n) || n < 1 || n > 6) {
+      return {
+        monthOffset: 1,
+        usedDefault: true,
+        errorMessage: `Invalid backfill month offset: ${String((data as { value?: string } | null)?.value ?? "")}`,
+      };
+    }
+    return {
+      monthOffset: n,
+      usedDefault: false,
+      errorMessage: null,
+    };
+  } catch (error) {
+    return {
+      monthOffset: 1,
+      usedDefault: true,
+      errorMessage: error instanceof Error ? error.message : "unknown sync_state read error",
+    };
   }
 }
 
@@ -373,7 +419,7 @@ export async function writeBackfillMonthOffset(
   offset: number,
 ) {
   try {
-    await client.from("sync_state").upsert(
+    const { error } = await client.from("sync_state").upsert(
       {
         key: "backfill_6m_month_offset",
         value: String(offset),
@@ -381,8 +427,12 @@ export async function writeBackfillMonthOffset(
       },
       { onConflict: "key" },
     );
-  } catch {
-    return;
+    return { ok: !error, errorMessage: error?.message ?? null };
+  } catch (error) {
+    return {
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : "unknown sync_state write error",
+    };
   }
 }
 

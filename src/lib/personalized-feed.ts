@@ -4,6 +4,7 @@ import {
   rankPersonalizedFeedPapers,
   rankTopicFallbackFeedPapers,
 } from "@/lib/personalized-feed-ranking";
+import { filterReviewLikePapers } from "@/lib/paper-article-type";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
   listPersonalizedFeedCandidatePapers,
@@ -43,7 +44,8 @@ export async function getPersonalizedFeedInApp(args: {
     cutoffDate: recentCutoffDate(30),
     limit: args.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT,
   });
-  const exactRanked = rankPersonalizedFeedPapers(candidates, terms);
+  const filteredCandidates = filterReviewLikePapers(candidates, status.excludeReviews);
+  const exactRanked = rankPersonalizedFeedPapers(filteredCandidates, terms);
   if (exactRanked.length) {
     return paginateRankedFeed(exactRanked, args.page, args.pageSize, {
       exactMatchTotal: exactRanked.length,
@@ -54,7 +56,7 @@ export async function getPersonalizedFeedInApp(args: {
   }
 
   if (terms.keywords.length && terms.journals.length) {
-    const topicFallback = rankTopicFallbackFeedPapers(candidates, terms);
+    const topicFallback = rankTopicFallbackFeedPapers(filteredCandidates, terms);
     if (topicFallback.length) {
       return paginateRankedFeed(topicFallback, args.page, args.pageSize, {
         exactMatchTotal: 0,

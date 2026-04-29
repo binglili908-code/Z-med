@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { filterReviewLikePapers } from "@/lib/paper-article-type";
 import {
   buildSearchText,
   expandSubscriptionTerms,
@@ -83,6 +84,7 @@ export async function generateRecommendations(
   const journalTerms = new Set(customJournals);
 
   let papers = await listRecommendationCandidatePapers(supabase);
+  papers = filterReviewLikePapers(papers, profile?.exclude_reviews === true);
   papers = filterByJournalTerms(papers, journalTerms);
   papers = filterByKeywords(papers, profileKeywords).slice(0, 20);
 

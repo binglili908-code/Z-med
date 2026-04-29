@@ -16,6 +16,7 @@ function profileStatus(
 ): ProfileSubscriptionStatus {
   return {
     customJournals: [],
+    excludeReviews: false,
     hasSubscriptionConfig: true,
     keywords: [],
     matchingJournals: [],
@@ -47,6 +48,7 @@ function paper(overrides: Partial<DbPaper> & Pick<DbPaper, "id" | "title">): DbP
     pubmed_url: "https://pubmed.ncbi.nlm.nih.gov/1/",
     quality_score: 80,
     quality_tier: "core",
+    source_payload: null,
     title_zh: null,
     ...restOverrides,
     id,
