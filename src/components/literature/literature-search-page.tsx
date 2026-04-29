@@ -6,6 +6,7 @@ import { Search } from "lucide-react";
 
 import { Container } from "@/components/site/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { fetchWithClientTimeout } from "@/lib/client-fetch";
 
 type SearchPaper = {
   id: string;
@@ -140,6 +141,13 @@ function writeSearchCache(params: URLSearchParams, entry: SearchCacheEntry) {
   }
 }
 
+function getSearchErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
+    return "\u641c\u7d22\u8fde\u63a5\u8d85\u65f6\uff0c\u8bf7\u70b9\u51fb\u91cd\u8bd5\u3002";
+  }
+  return "\u641c\u7d22\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u7f51\u7edc\u540e\u91cd\u8bd5\u3002";
+}
+
 export function LiteratureSearchPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -177,6 +185,8 @@ export function LiteratureSearchPage() {
   const [loading, setLoading] = React.useState(false);
   const [total, setTotal] = React.useState(cachedInitialSearch?.total ?? 0);
   const [items, setItems] = React.useState<SearchPaper[]>(cachedInitialSearch?.items ?? []);
+  const [searchError, setSearchError] = React.useState<string | null>(null);
+  const [retryKey, setRetryKey] = React.useState(0);
   const highlightTerms = React.useMemo(() => normalizeHighlightTerms(initialQ), [initialQ]);
   const ifRangeLabel = React.useMemo(
     () => formatIfRangeLabel(initialIfMin, initialIfMax),
@@ -208,17 +218,23 @@ export function LiteratureSearchPage() {
       } else {
         setLoading(true);
       }
+      setSearchError(null);
       try {
-        const res = await fetch(`/api/papers/search?${activeSearchParams.toString()}`, {
+        const res = await fetchWithClientTimeout(`/api/papers/search?${activeSearchParams.toString()}`, {
           cache: "no-store",
           signal: controller.signal,
-        });
+        }, cached ? 18000 : 12000);
         if (controller.signal.aborted) return;
         if (!res.ok) {
           if (!cached) {
             setItems([]);
             setTotal(0);
           }
+          setSearchError(
+            cached
+              ? "\u5df2\u663e\u793a\u4e0a\u6b21\u641c\u7d22\u7ed3\u679c\uff0c\u672c\u6b21\u5237\u65b0\u5931\u8d25\uff0c\u53ef\u70b9\u51fb\u91cd\u8bd5\u3002"
+              : "\u641c\u7d22\u5931\u8d25\uff0c\u8bf7\u70b9\u51fb\u91cd\u8bd5\u3002",
+          );
           return;
         }
         const json = (await res.json()) as SearchResponse;
@@ -229,12 +245,17 @@ export function LiteratureSearchPage() {
         writeSearchCache(activeSearchParams, next);
         setItems(next.items);
         setTotal(next.total);
-      } catch {
+      } catch (error) {
         if (controller.signal.aborted) return;
         if (!cached) {
           setItems([]);
           setTotal(0);
         }
+        setSearchError(
+          cached
+            ? "\u5df2\u663e\u793a\u4e0a\u6b21\u641c\u7d22\u7ed3\u679c\uff0c\u672c\u6b21\u5237\u65b0\u5931\u8d25\uff0c\u53ef\u70b9\u51fb\u91cd\u8bd5\u3002"
+            : getSearchErrorMessage(error),
+        );
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -244,7 +265,7 @@ export function LiteratureSearchPage() {
 
     void load();
     return () => controller.abort();
-  }, [activeSearchParams]);
+  }, [activeSearchParams, retryKey]);
 
   const onSubmit = React.useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
@@ -382,7 +403,20 @@ export function LiteratureSearchPage() {
 
           {loading ? <div className="mt-6 text-sm text-slate-500">搜索中...</div> : null}
 
-          {!loading && !items.length ? (
+          {searchError ? (
+            <div className="mt-4 flex flex-col gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 sm:flex-row sm:items-center sm:justify-between">
+              <span>{searchError}</span>
+              <button
+                type="button"
+                onClick={() => setRetryKey((value) => value + 1)}
+                className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-sm font-semibold text-rose-800 hover:bg-rose-100"
+              >
+                {"\u91cd\u8bd5"}
+              </button>
+            </div>
+          ) : null}
+
+          {!loading && !searchError && !items.length ? (
             <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center">
               <div className="text-base font-semibold text-slate-800">暂未找到匹配文献</div>
               <div className="mt-2 text-sm text-slate-500">

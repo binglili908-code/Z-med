@@ -5,6 +5,7 @@ import { searchPapers } from "@/server/repositories/papers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));

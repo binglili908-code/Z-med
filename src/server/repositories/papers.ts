@@ -81,6 +81,10 @@ export type PersonalizedFeedResult = {
   fallbackType?: "topic" | null;
 };
 
+const SEARCH_PAPER_SELECT =
+  "id,title,title_zh,abstract,abstract_zh,journal,journal_if,journal_cas_zone,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms";
+const SEARCH_TERM_CANDIDATE_LIMIT = 500;
+
 function normalizeQualityTier(input: string | null | undefined): PaperQualityTier {
   const value = input?.toLowerCase();
   if (value === "top" || value === "core" || value === "emerging") return value;
@@ -290,6 +294,31 @@ function paperMatchesOneTermGroup(paper: SearchPaperRow, terms: string[]) {
   );
 }
 
+function sanitizePostgrestIlikeTerm(term: string) {
+  return term
+    .normalize("NFKC")
+    .replace(/[%(),]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function buildSearchTextPrefilter(terms: string[]) {
+  const filters = terms
+    .flatMap((term) => expandSubscriptionTerms([term]))
+    .map(sanitizePostgrestIlikeTerm)
+    .filter(Boolean)
+    .slice(0, 12)
+    .flatMap((term) => [
+      `title.ilike.%${term}%`,
+      `title_zh.ilike.%${term}%`,
+      `abstract.ilike.%${term}%`,
+      `abstract_zh.ilike.%${term}%`,
+      `journal.ilike.%${term}%`,
+    ]);
+  return filters.length ? filters.join(",") : null;
+}
+
 export function paperMatchesSearchTerms(paper: SearchPaperRow, terms: string[]) {
   if (!terms.length) return true;
   return terms.every((term) => {
@@ -314,9 +343,7 @@ export async function searchPapers(
 ) {
   let query = client
     .from("papers")
-    .select(
-      "id,title,title_zh,abstract,abstract_zh,journal,journal_if,journal_cas_zone,publication_date,pubmed_url,is_open_access,oa_pdf_url,is_ai_med,ai_med_score,quality_score,quality_tier,keywords,mesh_terms",
-    )
+    .select(SEARCH_PAPER_SELECT, { count: params.terms.length ? undefined : "exact" })
     .eq("is_ai_med", true);
 
   if (params.tier) {
@@ -338,10 +365,34 @@ export async function searchPapers(
     query = query.lte("journal_if", params.ifMax);
   }
 
+  if (!params.terms.length) {
+    const { data, error, count } = await query
+      .order("quality_score", { ascending: false })
+      .order("ai_med_score", { ascending: false })
+      .order("publication_date", { ascending: false })
+      .range(params.fromIndex, params.toIndex);
+    if (error) {
+      throw new Error(error.message);
+    }
+    const rows = (data ?? []) as SearchPaperRow[];
+    return {
+      total: count ?? rows.length,
+      items: rows,
+    };
+  }
+
+  for (const term of params.terms) {
+    const prefilter = buildSearchTextPrefilter([term]);
+    if (prefilter) {
+      query = query.or(prefilter);
+    }
+  }
+
   const { data, error } = await query
     .order("quality_score", { ascending: false })
     .order("ai_med_score", { ascending: false })
-    .order("publication_date", { ascending: false });
+    .order("publication_date", { ascending: false })
+    .limit(Math.max(SEARCH_TERM_CANDIDATE_LIMIT, params.toIndex + 1));
   if (error) {
     throw new Error(error.message);
   }

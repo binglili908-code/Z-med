@@ -7,6 +7,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Clock, Sparkles } from "lucide-react";
 
 import { buildRedirectTarget, buildSignInPath } from "@/lib/auth-navigation";
+import { fetchWithClientTimeout } from "@/lib/client-fetch";
 import { DEV_PANEL_EMAIL, isDevPanelEmail } from "@/lib/dev-admin";
 import { getBrowserSupabaseClient } from "@/lib/supabase/browser";
 
@@ -264,7 +265,31 @@ type SpotlightViewCache = {
   strictMatchMessage: string | null;
 };
 
-let cachedSpotlightView: SpotlightViewCache | null = null;
+const ANONYMOUS_SPOTLIGHT_CACHE_KEY = "anonymous";
+const spotlightViewCache = new Map<string, SpotlightViewCache>();
+
+function getSpotlightCache(cacheKey: string) {
+  return spotlightViewCache.get(cacheKey) ?? null;
+}
+
+function writeSpotlightCache(cacheKey: string, cache: SpotlightViewCache) {
+  spotlightViewCache.set(cacheKey, cache);
+}
+
+function buildSessionSpotlightCacheKey(session: { userId?: string | null; email?: string | null }) {
+  if (session.userId) return `user:${session.userId}`;
+  if (session.email) return `email:${session.email.toLowerCase()}`;
+  return ANONYMOUS_SPOTLIGHT_CACHE_KEY;
+}
+
+function getSpotlightErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
+    return "\u9996\u9875\u63a8\u8350\u8fde\u63a5\u8d85\u65f6\uff0c\u8bf7\u70b9\u51fb\u91cd\u8bd5\u3002";
+  }
+  return "\u9996\u9875\u63a8\u8350\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002";
+}
+
+const anonymousSpotlightCache = getSpotlightCache(ANONYMOUS_SPOTLIGHT_CACHE_KEY);
 
 export function DailyPaperModule() {
   const router = useRouter();
@@ -272,27 +297,29 @@ export function DailyPaperModule() {
   const searchParams = useSearchParams();
   const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
 
-  const [paper, setPaper] = React.useState<DailyPaperView>(cachedSpotlightView?.paper ?? fallbackPaper);
-  const [items, setItems] = React.useState<DailyPaperView[]>(cachedSpotlightView?.items ?? []);
+  const [paper, setPaper] = React.useState<DailyPaperView>(anonymousSpotlightCache?.paper ?? fallbackPaper);
+  const [items, setItems] = React.useState<DailyPaperView[]>(anonymousSpotlightCache?.items ?? []);
   const [browseEnabled, setBrowseEnabled] = React.useState(false);
   const [browseItems, setBrowseItems] = React.useState<DailyPaperView[]>([]);
   const [browsePage, setBrowsePage] = React.useState(1);
   const [browseTotalPages, setBrowseTotalPages] = React.useState(1);
   const [browseLoading, setBrowseLoading] = React.useState(false);
   const [strictMatchMessage, setStrictMatchMessage] = React.useState<string | null>(
-    cachedSpotlightView?.strictMatchMessage ?? null,
+    anonymousSpotlightCache?.strictMatchMessage ?? null,
   );
   const [browseStrictMatchMessage, setBrowseStrictMatchMessage] = React.useState<string | null>(null);
-  const [requiresLogin, setRequiresLogin] = React.useState(cachedSpotlightView?.requiresLogin ?? false);
-  const [hasSubscription, setHasSubscription] = React.useState(cachedSpotlightView?.hasSubscription ?? false);
+  const [requiresLogin, setRequiresLogin] = React.useState(anonymousSpotlightCache?.requiresLogin ?? false);
+  const [hasSubscription, setHasSubscription] = React.useState(anonymousSpotlightCache?.hasSubscription ?? false);
   const [currentUserEmail, setCurrentUserEmail] = React.useState<string | null>(null);
-  const [devBypassAuth, setDevBypassAuth] = React.useState(cachedSpotlightView?.devBypassAuth ?? false);
+  const [devBypassAuth, setDevBypassAuth] = React.useState(anonymousSpotlightCache?.devBypassAuth ?? false);
   const [devBypassUserId, setDevBypassUserId] = React.useState<string | null>(
-    cachedSpotlightView?.devBypassUserId ?? null,
+    anonymousSpotlightCache?.devBypassUserId ?? null,
   );
   const [devBypassSeedEmail, setDevBypassSeedEmail] = React.useState<string | null>(
-    cachedSpotlightView?.devBypassSeedEmail ?? null,
+    anonymousSpotlightCache?.devBypassSeedEmail ?? null,
   );
+  const [spotlightError, setSpotlightError] = React.useState<string | null>(null);
+  const [spotlightRefreshKey, setSpotlightRefreshKey] = React.useState(0);
   const [canTranslate, setCanTranslate] = React.useState(false);
   const [digestSendState, setDigestSendState] = React.useState<"idle" | "sending" | "sent" | "error">("idle");
   const [translateState, setTranslateState] = React.useState<Record<string, "idle" | "translating" | "done" | "error">>({});
@@ -323,6 +350,7 @@ export function DailyPaperModule() {
     return {
       accessToken: session?.access_token ?? null,
       email: session?.user?.email ?? null,
+      userId: session?.user?.id ?? null,
     };
   }, [supabase]);
 
@@ -331,33 +359,81 @@ export function DailyPaperModule() {
     return accessToken;
   }, [getSessionInfo]);
 
+  const applySpotlightCache = React.useCallback((cache: SpotlightViewCache | null) => {
+    if (!cache) return false;
+    setPaper(cache.paper);
+    setItems(cache.items);
+    setRequiresLogin(cache.requiresLogin);
+    setHasSubscription(cache.hasSubscription);
+    setDevBypassAuth(cache.devBypassAuth);
+    setDevBypassUserId(cache.devBypassUserId);
+    setDevBypassSeedEmail(cache.devBypassSeedEmail);
+    setStrictMatchMessage(cache.strictMatchMessage);
+    return true;
+  }, []);
+
+  const resetSpotlightView = React.useCallback(() => {
+    setPaper(fallbackPaper);
+    setItems([]);
+    setRequiresLogin(false);
+    setHasSubscription(false);
+    setDevBypassAuth(false);
+    setDevBypassUserId(null);
+    setDevBypassSeedEmail(null);
+    setStrictMatchMessage(null);
+    setSpotlightError(null);
+  }, []);
+
   React.useEffect(() => {
     if (!supabase) return;
 
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setCurrentUserEmail(data.session?.user?.email ?? null);
+      const session = data.session;
+      setCurrentUserEmail(session?.user?.email ?? null);
+      const cacheKey = buildSessionSpotlightCacheKey({
+        userId: session?.user?.id ?? null,
+        email: session?.user?.email ?? null,
+      });
+      if (!applySpotlightCache(getSpotlightCache(cacheKey))) {
+        resetSpotlightView();
+      }
     });
 
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
       setCurrentUserEmail(session?.user?.email ?? null);
+      const cacheKey = buildSessionSpotlightCacheKey({
+        userId: session?.user?.id ?? null,
+        email: session?.user?.email ?? null,
+      });
+      if (!applySpotlightCache(getSpotlightCache(cacheKey))) {
+        resetSpotlightView();
+      }
+      setSpotlightRefreshKey((value) => value + 1);
     });
 
     return () => {
       mounted = false;
       subscription.subscription.unsubscribe();
     };
-  }, [supabase]);
+  }, [applySpotlightCache, resetSpotlightView, supabase]);
 
   const loadFeed = React.useCallback(async () => {
+    let cacheKey = ANONYMOUS_SPOTLIGHT_CACHE_KEY;
     try {
-      const token = await getAccessToken();
-      const res = await fetch("/api/papers/spotlight", {
+      const sessionInfo = await getSessionInfo();
+      const token = sessionInfo.accessToken;
+      cacheKey = buildSessionSpotlightCacheKey(sessionInfo);
+      const hasCachedView = Boolean(getSpotlightCache(cacheKey));
+      setSpotlightError(null);
+      const res = await fetchWithClientTimeout("/api/papers/spotlight", {
         cache: "no-store",
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
-      if (!res.ok) return;
+      }, hasCachedView ? 20000 : 12000);
+      if (!res.ok) {
+        throw new Error(`SPOTLIGHT_HTTP_${res.status}`);
+      }
       const json = (await res.json()) as FeedResponse;
       const nextRequiresLogin = Boolean(json.requiresLogin);
       const nextHasSubscription = Boolean(json.hasSubscription);
@@ -374,7 +450,10 @@ export function DailyPaperModule() {
           ? exactMatchEmptyPaper
           : fallbackPaper;
       const nextItems = rows.slice(1);
-      cachedSpotlightView = {
+      const responseCacheKey = json.devBypassAuth && json.devBypassUserId
+        ? `dev:${json.devBypassUserId}`
+        : cacheKey;
+      writeSpotlightCache(responseCacheKey, {
         paper: nextPaper,
         items: nextItems,
         requiresLogin: nextRequiresLogin,
@@ -383,7 +462,7 @@ export function DailyPaperModule() {
         devBypassUserId: nextDevBypassUserId,
         devBypassSeedEmail: nextDevBypassSeedEmail,
         strictMatchMessage: nextStrictMatchMessage,
-      };
+      });
       setRequiresLogin(nextRequiresLogin);
       setHasSubscription(nextHasSubscription);
       setDevBypassAuth(nextDevBypassAuth);
@@ -406,10 +485,15 @@ export function DailyPaperModule() {
       setExpandedSummaryIds({});
       setDigestSendState("idle");
       setTranslateState({});
-    } catch {
-      return;
+    } catch (error) {
+      const hadCache = applySpotlightCache(getSpotlightCache(cacheKey));
+      setSpotlightError(
+        hadCache
+          ? "\u5df2\u663e\u793a\u4e0a\u6b21\u63a8\u8350\u7ed3\u679c\uff0c\u672c\u6b21\u5237\u65b0\u5931\u8d25\uff0c\u53ef\u70b9\u51fb\u91cd\u8bd5\u3002"
+          : getSpotlightErrorMessage(error),
+      );
     }
-  }, [getAccessToken]);
+  }, [applySpotlightCache, getSessionInfo]);
 
   const loadTranslateAvailability = React.useCallback(async () => {
     try {
@@ -455,7 +539,7 @@ export function DailyPaperModule() {
 
   React.useEffect(() => {
     void loadFeed();
-  }, [loadFeed]);
+  }, [loadFeed, spotlightRefreshKey]);
 
   React.useEffect(() => {
     void loadTranslateAvailability();
@@ -841,6 +925,19 @@ export function DailyPaperModule() {
       {strictMatchMessage ? (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
           {strictMatchMessage}
+        </div>
+      ) : null}
+
+      {spotlightError ? (
+        <div className="mb-4 flex flex-col gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-relaxed text-rose-800 sm:flex-row sm:items-center sm:justify-between">
+          <span>{spotlightError}</span>
+          <button
+            type="button"
+            onClick={() => setSpotlightRefreshKey((value) => value + 1)}
+            className="rounded-md border border-rose-300 bg-white px-2 py-1 font-semibold text-rose-800 hover:bg-rose-100"
+          >
+            {"\u91cd\u8bd5"}
+          </button>
         </div>
       ) : null}
 

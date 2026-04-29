@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   paperMatchesSearchTerms,
+  searchPapers,
   type SearchPaperRow,
 } from "../src/server/repositories/papers";
 
@@ -76,4 +77,48 @@ test("Chinese pancreatic cancer query expands to English aliases", () => {
     ),
     true,
   );
+});
+
+test("paper search paginates in the database when no keyword terms are provided", async () => {
+  const calls: string[] = [];
+  const rows = [paper({ id: "paper-1", title: "High quality AI medicine" })];
+  const query = {
+    select(_columns: string, options?: { count?: string }) {
+      calls.push(`select:${options?.count ?? "none"}`);
+      return this;
+    },
+    eq() {
+      return this;
+    },
+    order() {
+      return this;
+    },
+    range(from: number, to: number) {
+      calls.push(`range:${from}-${to}`);
+      return Promise.resolve({ data: rows, error: null, count: 123 });
+    },
+  };
+  const client = {
+    from(table: string) {
+      calls.push(`from:${table}`);
+      return query;
+    },
+  };
+
+  const result = await searchPapers(client as never, {
+    terms: [],
+    tier: "",
+    from: "",
+    to: "",
+    openAccessOnly: false,
+    ifMin: null,
+    ifMax: null,
+    fromIndex: 10,
+    toIndex: 19,
+  });
+
+  assert.equal(result.total, 123);
+  assert.deepEqual(result.items.map((item) => item.id), ["paper-1"]);
+  assert.ok(calls.includes("select:exact"));
+  assert.ok(calls.includes("range:10-19"));
 });
