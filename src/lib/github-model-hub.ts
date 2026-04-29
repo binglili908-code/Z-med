@@ -519,7 +519,8 @@ function mergeCandidate(
 }
 
 export async function runGitHubModelHubSync(options: GitHubModelHubSyncOptions = {}) {
-  const supabase = createServiceSupabaseClient();
+  const dryRun = Boolean(options.dryRun);
+  const supabase = dryRun ? null : createServiceSupabaseClient();
   const queryLimit = Math.max(
     1,
     Math.min(MODEL_HUB_GITHUB_QUERIES.length, options.queryLimit ?? MODEL_HUB_GITHUB_QUERIES.length),
@@ -527,14 +528,16 @@ export async function runGitHubModelHubSync(options: GitHubModelHubSyncOptions =
   const queries = MODEL_HUB_GITHUB_QUERIES.slice(0, queryLimit);
   const perPage = Math.max(1, Math.min(100, options.perPage ?? DEFAULT_PER_PAGE));
   const syncedAt = new Date().toISOString();
-  const run = await startModelHubSyncRun(supabase, {
-    source: "github",
-    meta: {
-      dryRun: Boolean(options.dryRun),
-      queryIds: queries.map((query) => query.id),
-      perPage,
-    },
-  });
+  const run = supabase
+    ? await startModelHubSyncRun(supabase, {
+        source: "github",
+        meta: {
+          dryRun,
+          queryIds: queries.map((query) => query.id),
+          perPage,
+        },
+      })
+    : null;
 
   const candidateMap = new Map<number, ModelHubItemUpsertRow>();
   let fetchedCount = 0;
@@ -568,41 +571,46 @@ export async function runGitHubModelHubSync(options: GitHubModelHubSyncOptions =
       (a, b) => b.recommendation_score - a.recommendation_score,
     );
     let removedStaleCount = 0;
-    if (!options.dryRun) {
+    if (!dryRun) {
+      if (!supabase) throw new Error("Supabase client is required for apply mode.");
       await upsertModelHubItems(supabase, rows);
       removedStaleCount = await deleteModelHubItemsNotSyncedAt(supabase, syncedAt);
     }
-    await finishModelHubSyncRun(supabase, run?.id ?? null, {
-      status: "success",
-      queryCount: queries.length,
-      fetchedCount,
-      upsertedCount: options.dryRun ? 0 : rows.length,
-      skippedCount: Math.max(0, fetchedCount - rows.length),
-      meta: { querySummaries, removedStaleCount },
-    });
+    if (supabase) {
+      await finishModelHubSyncRun(supabase, run?.id ?? null, {
+        status: "success",
+        queryCount: queries.length,
+        fetchedCount,
+        upsertedCount: dryRun ? 0 : rows.length,
+        skippedCount: Math.max(0, fetchedCount - rows.length),
+        meta: { querySummaries, removedStaleCount },
+      });
+    }
 
     return {
       status: "success",
-      dryRun: Boolean(options.dryRun),
+      dryRun,
       queryCount: queries.length,
       fetchedCount,
       candidateCount: rows.length,
-      upsertedCount: options.dryRun ? 0 : rows.length,
+      upsertedCount: dryRun ? 0 : rows.length,
       removedStaleCount,
       skippedCount: Math.max(0, fetchedCount - rows.length),
       hasGitHubToken: Boolean(getGitHubToken()),
       querySummaries,
     };
   } catch (error) {
-    await finishModelHubSyncRun(supabase, run?.id ?? null, {
-      status: "failed",
-      queryCount: queries.length,
-      fetchedCount,
-      upsertedCount: 0,
-      skippedCount: Math.max(0, fetchedCount - candidateMap.size),
-      errorMessage: error instanceof Error ? error.message : String(error),
-      meta: { querySummaries },
-    });
+    if (supabase) {
+      await finishModelHubSyncRun(supabase, run?.id ?? null, {
+        status: "failed",
+        queryCount: queries.length,
+        fetchedCount,
+        upsertedCount: 0,
+        skippedCount: Math.max(0, fetchedCount - candidateMap.size),
+        errorMessage: error instanceof Error ? error.message : String(error),
+        meta: { querySummaries },
+      });
+    }
     throw error;
   }
 }

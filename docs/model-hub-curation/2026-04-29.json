@@ -1,0 +1,352 @@
+{
+  "curation_date": "2026-04-29",
+  "curated_by": "Codex",
+  "notes": "First manual Model Hub curation preview. All candidates remain unconfirmed until the owner approves. This batch only targets projects already present in model_hub_items; new intake suggestions are listed separately.",
+  "source_queries": [
+    "topic:medical-imaging topic:deep-learning archived:false pushed:>=2026-01-01 stars:>50",
+    "bioimage deep-learning in:name,description,readme archived:false pushed:>=2026-01-01 stars:>50",
+    "radiology AI in:name,description,readme archived:false pushed:>=2025-10-01 stars:>50",
+    "pathology deep-learning in:name,description,readme archived:false pushed:>=2025-10-01 stars:>50",
+    "medical llm in:name,description,readme archived:false pushed:>=2025-10-01 stars:>50",
+    "healthcare machine-learning in:name,description,readme archived:false pushed:>=2026-01-01 stars:>50",
+    "topic:bioinformatics topic:machine-learning archived:false pushed:>=2026-01-01 stars:>50",
+    "topic:drug-discovery topic:machine-learning archived:false pushed:>=2026-01-01 stars:>50",
+    "clinical AI evaluation monitoring in:name,description,readme archived:false pushed:>=2025-01-01 stars:>50"
+  ],
+  "candidates": [
+    {
+      "full_name": "Project-MONAI/MONAILabel",
+      "github_id": 351826770,
+      "confirmed": true,
+      "curation_status": "featured",
+      "curated_score": 95,
+      "curator_summary": "医学影像标注与交互式训练的成熟工具，适合把数据标注、主动学习和模型迭代连成闭环。",
+      "curated_recommendation_reason": "MONAI Label 有清晰的医学影像定位、Apache-2.0 许可、文档和样例生态，支持 3D Slicer、OHIF、QuPath、CVAT 等工作流，是模型 Hub 首批精选里最适合展示“可落地工具链”的项目。",
+      "project_understanding": "它不是单个模型，而是 server-client 标注系统：开发者可以封装 MONAI Label App，用户在影像查看器中进行交互式标注，系统再用用户反馈持续改进分割或检测模型。",
+      "risk_notes": "主要适合研究与临床评估前流程；涉及真实临床部署时仍需要本地数据治理、模型验证和合规审查。",
+      "target_users": [
+        "medical-imaging",
+        "radiology",
+        "pathology",
+        "researcher",
+        "engineer"
+      ],
+      "curation_tags": [
+        "featured",
+        "active-learning",
+        "annotation",
+        "apache-2.0",
+        "deployment-adjacent"
+      ],
+      "curation_notes": "Primary evidence: GitHub README and repository metadata reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "Project-MONAI/monai-deploy-app-sdk",
+      "github_id": 378290631,
+      "confirmed": true,
+      "curation_status": "featured",
+      "curated_score": 93,
+      "curator_summary": "面向医学影像 AI 应用打包、验证和部署的 MONAI 工程框架。",
+      "curated_recommendation_reason": "它补上了从模型到应用的关键一段：DICOM 读取、推理 DAG、Triton 远程推理、MONAI transforms、应用打包和本地调试，适合平台用户理解医学 AI 工程化链路。",
+      "project_understanding": "该 SDK 通过 Python API 定义医学影像推理应用，把算子、输入输出、预处理、推理和后处理组合成可运行的 MONAI Application Package。",
+      "risk_notes": "更偏工程框架，不等于开箱即用的临床产品；使用者仍需要自己准备模型、数据接口、性能测试和部署环境。",
+      "target_users": [
+        "medical-imaging",
+        "mlops",
+        "engineer",
+        "hospital-it"
+      ],
+      "curation_tags": [
+        "featured",
+        "deployment",
+        "dicom",
+        "apache-2.0",
+        "monai"
+      ],
+      "curation_notes": "Primary evidence: GitHub README, topics and package instructions reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "google/deepvariant",
+      "github_id": 111751293,
+      "confirmed": true,
+      "curation_status": "featured",
+      "curated_score": 92,
+      "curator_summary": "Google 维护的深度学习变异检测流水线，是生物信息学方向最成熟的模型工程项目之一。",
+      "curated_recommendation_reason": "DeepVariant 有明确的 genomics 任务、长期维护、BSD-3-Clause 许可、标准 VCF/gVCF 输出和多平台测序案例，适合作为医学 AI 中“非影像”方向的高质量代表。",
+      "project_understanding": "它把比对后的测序 reads 转成 pileup image tensors，再用卷积网络分类候选位点，最终输出标准变异检测结果；同时扩展到 DeepTrio 等家庭样本场景。",
+      "risk_notes": "适用边界集中在胚系变异检测和特定测序数据类型；不是泛化的临床基因组解释系统。",
+      "target_users": [
+        "bioinformatics",
+        "genomics",
+        "researcher",
+        "engineer"
+      ],
+      "curation_tags": [
+        "featured",
+        "genomics",
+        "production-grade",
+        "bsd-3-clause",
+        "google"
+      ],
+      "curation_notes": "Primary evidence: GitHub README and release metadata reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "mlmed/torchxrayvision",
+      "github_id": 244798181,
+      "confirmed": true,
+      "curation_status": "featured",
+      "curated_score": 91,
+      "curator_summary": "胸片数据集与预训练模型库，适合作为 CXR 研究的基线和特征提取工具。",
+      "curated_recommendation_reason": "TorchXRayVision 同时提供统一数据集接口、预训练分类/表示学习模型和论文支撑，解决胸片研究中数据预处理、外部验证和基线复现的常见摩擦。",
+      "project_understanding": "它把多个公开胸片数据集接入到统一 API，并提供在不同数据组合上训练的模型，研究者可以用它快速做分类基线、迁移学习或分布外泛化实验。",
+      "risk_notes": "医疗影像模型存在明显数据集偏移风险；项目适合作为研究基线，不应直接包装成诊断建议。",
+      "target_users": [
+        "radiology",
+        "chest-xray",
+        "researcher",
+        "student"
+      ],
+      "curation_tags": [
+        "featured",
+        "pretrained-models",
+        "dataset-api",
+        "paper-backed",
+        "apache-2.0"
+      ],
+      "curation_notes": "Primary evidence: GitHub README, documentation and linked paper reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "BiaPyX/BiaPy",
+      "github_id": 173138251,
+      "confirmed": true,
+      "curation_status": "recommended",
+      "curated_score": 89,
+      "curator_summary": "面向 bioimage 的通用深度学习流水线库，覆盖分割、检测、去噪、超分和自监督等任务。",
+      "curated_recommendation_reason": "BiaPy 最近活跃、MIT 许可、文档和 GUI 入口齐全，并有 Nature Methods 论文支撑，适合推荐给需要快速搭建生物图像分析 pipeline 的科研用户。",
+      "project_understanding": "它把常见 2D/3D bioimage 工作流配置化，降低从数据准备、训练到推理的门槛；对不熟悉深度学习工程的实验室用户尤其友好。",
+      "risk_notes": "更偏 bioimage 研究工具，不是特定临床场景模型；复杂任务仍需要用户理解数据标注和评价指标。",
+      "target_users": [
+        "bioimage",
+        "medical-imaging",
+        "researcher",
+        "student"
+      ],
+      "curation_tags": [
+        "recommended",
+        "bioimage",
+        "pipeline",
+        "gui",
+        "mit"
+      ],
+      "curation_notes": "Primary evidence: GitHub README, topics and linked Nature Methods paper reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "scverse/scanpy",
+      "github_id": 80342493,
+      "confirmed": true,
+      "curation_status": "recommended",
+      "curated_score": 88,
+      "curator_summary": "单细胞表达数据分析的核心 Python 工具，适合作为生信 AI 工作流的基础组件。",
+      "curated_recommendation_reason": "Scanpy 不是单个 AI 模型，但它是单细胞分析生态中的基础设施，覆盖预处理、聚类、轨迹推断、差异表达和大规模数据处理，能支撑后续机器学习建模。",
+      "project_understanding": "它基于 AnnData 组织单细胞数据，并提供从数据清洗到可视化和统计分析的完整 API；适合在模型训练前构建可靠的组学分析底座。",
+      "risk_notes": "推荐理由是基础设施价值而非模型能力；页面呈现时应避免把它描述为医学诊断模型。",
+      "target_users": [
+        "bioinformatics",
+        "single-cell",
+        "researcher",
+        "data-scientist"
+      ],
+      "curation_tags": [
+        "recommended",
+        "infrastructure",
+        "single-cell",
+        "bsd-3-clause",
+        "scverse"
+      ],
+      "curation_notes": "Primary evidence: GitHub README and documentation links reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "chemprop/chemprop",
+      "github_id": 167628014,
+      "confirmed": true,
+      "curation_status": "recommended",
+      "curated_score": 86,
+      "curator_summary": "面向分子性质预测的消息传递神经网络工具，是 AI 药物发现方向的经典工程项目。",
+      "curated_recommendation_reason": "Chemprop 有明确的分子属性预测任务、教程 notebooks、PyPI/conda 分发和活跃维护，适合推荐给做 ADMET、活性预测或分子表征实验的用户。",
+      "project_understanding": "它实现基于分子图的 message passing neural networks，可通过 CLI、Python API 和示例 notebooks 做分子性质预测模型训练与推理。",
+      "risk_notes": "GitHub license metadata 当前未明确识别，README badge 显示 MIT，商业使用前应二次核验 LICENSE；模型预测也不能替代湿实验验证。",
+      "target_users": [
+        "drug-discovery",
+        "chemistry",
+        "researcher",
+        "engineer"
+      ],
+      "curation_tags": [
+        "recommended",
+        "molecular-property",
+        "paper-backed",
+        "needs-license-review"
+      ],
+      "curation_notes": "Primary evidence: GitHub README and repository metadata reviewed on 2026-04-29; license metadata mismatch noted."
+    },
+    {
+      "full_name": "BiomedSciAI/fuse-med-ml",
+      "github_id": 379590754,
+      "confirmed": true,
+      "curation_status": "recommended",
+      "curated_score": 85,
+      "curator_summary": "医学机器学习研究的可复用框架，适合跨项目沉淀训练、评估和数据处理代码。",
+      "curated_recommendation_reason": "FuseMedML 有 PyPI 包、JOSS DOI、Apache-2.0 许可，并进入 PyTorch Ecosystem；它更像医学 ML 项目的工程骨架，适合推荐给反复做多模态或影像实验的团队。",
+      "project_understanding": "它强调跨医学 ML 项目的代码复用，把数据管线、训练循环、模型组件和实验管理抽象成可组合模块。",
+      "risk_notes": "抽象层有学习成本；小型单任务项目可能用 MONAI/PyTorch 直接实现更轻。",
+      "target_users": [
+        "medical-imaging",
+        "multimodal",
+        "researcher",
+        "engineer"
+      ],
+      "curation_tags": [
+        "recommended",
+        "framework",
+        "pytorch-ecosystem",
+        "apache-2.0",
+        "joss"
+      ],
+      "curation_notes": "Primary evidence: GitHub README, topics and JOSS badge reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "MedMNIST/MedMNIST",
+      "github_id": 307015982,
+      "confirmed": true,
+      "curation_status": "recommended",
+      "curated_score": 84,
+      "curator_summary": "标准化 2D/3D 生物医学图像分类基准，适合教学、快速 baseline 和轻量模型比较。",
+      "curated_recommendation_reason": "MedMNIST 有明确数据集定位、Apache-2.0 代码许可、论文和 Zenodo 数据引用，并提供 pip API；它对智医研用户做快速实验很友好。",
+      "project_understanding": "它把多个生物医学图像分类任务整理成 MNIST-like 标准格式，并提供不同分辨率版本，方便 AutoML、基础模型和轻量网络做横向比较。",
+      "risk_notes": "这是 benchmark/dataset，不是可部署模型；公开数据集性能不能直接外推到真实临床数据。",
+      "target_users": [
+        "medical-imaging",
+        "benchmark",
+        "student",
+        "researcher"
+      ],
+      "curation_tags": [
+        "recommended",
+        "dataset",
+        "benchmark",
+        "apache-2.0",
+        "education"
+      ],
+      "curation_notes": "Primary evidence: GitHub README, dataset links and publication references reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "FAST-Imaging/FAST",
+      "github_id": 17882588,
+      "confirmed": true,
+      "curation_status": "recommended",
+      "curated_score": 83,
+      "curator_summary": "高性能医学图像处理、推理和可视化框架，适合需要实时/流式处理的工程场景。",
+      "curated_recommendation_reason": "FAST 使用 C++、OpenCL/OpenGL 并支持 TensorRT、OpenVINO、TensorFlow、ONNX Runtime 等推理后端，是医学影像模型从脚本走向高性能应用时值得关注的工具。",
+      "project_understanding": "它提供 CPU/GPU 加速的图像处理 pipeline、Python/C++ 接口和可视化能力，适合超声、病理、影像流式处理或本地 demo。",
+      "risk_notes": "二进制发行版会链接多种第三方库，许可证组合需要在商业分发前核对；工程复杂度高于纯 Python 库。",
+      "target_users": [
+        "medical-imaging",
+        "inference",
+        "visualization",
+        "engineer"
+      ],
+      "curation_tags": [
+        "recommended",
+        "high-performance",
+        "inference",
+        "visualization",
+        "bsd-2-clause"
+      ],
+      "curation_notes": "Primary evidence: GitHub README and license note reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "NVIDIA/bionemo-framework",
+      "github_id": 705428944,
+      "confirmed": true,
+      "curation_status": "watchlist",
+      "curated_score": 82,
+      "curator_summary": "NVIDIA 面向数字生物和药物发现的大模型训练/适配框架，潜力高但使用门槛也高。",
+      "curated_recommendation_reason": "BioNeMo Framework 面向 biological data 的 transformer 训练配方和 GPU 优化工具，近期活跃且文档逐步完善，适合列入药物发现方向观察名单。",
+      "project_understanding": "它围绕 ESM-2 等生物序列模型训练、容器化环境和 GPU 集群工作流组织 recipes 与 sub-packages，目标是加速 biomolecular AI 模型构建。",
+      "risk_notes": "算力和环境要求较高，部分文档仍在完善；GitHub license metadata 在同步库里为空，需确认 LICENSE 与依赖许可后再强推荐。",
+      "target_users": [
+        "drug-discovery",
+        "digital-biology",
+        "foundation-model",
+        "engineer"
+      ],
+      "curation_tags": [
+        "watchlist",
+        "gpu",
+        "biomolecular-ai",
+        "needs-license-review",
+        "nvidia"
+      ],
+      "curation_notes": "Primary evidence: GitHub README, docs links and repository metadata reviewed on 2026-04-29."
+    },
+    {
+      "full_name": "VectorInstitute/cyclops",
+      "github_id": 462034019,
+      "confirmed": true,
+      "curation_status": "watchlist",
+      "curated_score": 78,
+      "curator_summary": "面向临床 ML 模型评估、监测和报告卡的工具，方向非常契合但仍应观察成熟度。",
+      "curated_recommendation_reason": "Cyclops 关注 clinical prediction 的评估、数据漂移监测和模型报告卡，正好补足“模型上线后怎么持续评估”的空白；但星标和许可证元数据提示还需要人工复核。",
+      "project_understanding": "它提供 data、models、tasks、evaluate、monitor、report 等 API，支持在 MIMIC、eICU、NIH chest X-ray 等临床数据任务上组织评估和监测流程。",
+      "risk_notes": "项目仍偏早期，GitHub license metadata 不明确；应以观察/研究推荐呈现，不宜作为生产监控方案背书。",
+      "target_users": [
+        "clinical-ai",
+        "evaluation",
+        "monitoring",
+        "researcher",
+        "engineer"
+      ],
+      "curation_tags": [
+        "watchlist",
+        "clinical-evaluation",
+        "model-monitoring",
+        "needs-license-review"
+      ],
+      "curation_notes": "Primary evidence: GitHub README, topics and repository metadata reviewed on 2026-04-29."
+    }
+  ],
+  "new_candidates_for_intake": [
+    {
+      "full_name": "Google-Health/medgemma",
+      "html_url": "https://github.com/Google-Health/medgemma",
+      "reason": "Medical text and image comprehension models based on Gemma 3; strong topical fit for clinical LLM and multimodal model hub coverage.",
+      "status": "not_in_current_model_hub_items",
+      "suggested_next_action": "Run a targeted GitHub intake or add manual insertion support before curation write."
+    },
+    {
+      "full_name": "wasserth/TotalSegmentator",
+      "html_url": "https://github.com/wasserth/TotalSegmentator",
+      "reason": "Robust CT/MR anatomical segmentation tool with datasets, online demo and Slicer extension; should be added to medical-imaging/radiology coverage.",
+      "status": "not_in_current_model_hub_items",
+      "suggested_next_action": "Run a targeted GitHub intake or add manual insertion support before curation write."
+    }
+  ],
+  "avoid_candidates": [
+    {
+      "full_name": "K-Dense-AI/scientific-agent-skills",
+      "reason": "High stars and recent activity, but current evidence is too broad and not specifically a medical AI model/tool despite matching bio/drug/clinical terms."
+    },
+    {
+      "full_name": "edaaydinea/AI-Projects-for-Healthcare",
+      "reason": "Looks like a collection of examples rather than a maintained reusable project; keep out of first curated batch."
+    },
+    {
+      "full_name": "patrick-llgc/Learning-Deep-Learning",
+      "reason": "Paper notes/resource material, not an installable medical AI project."
+    },
+    {
+      "full_name": "ultralytics/notebooks",
+      "reason": "Useful notebooks but generic and license/risk profile is not ideal for a medical AI recommendation card."
+    }
+  ]
+}

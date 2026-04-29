@@ -5,25 +5,38 @@ import {
 } from "@/lib/semantic-scholar-client";
 import {
   isReviewLikePublicationType,
+  isReviewLikePaper,
   isReviewLikeTitle,
 } from "@/lib/paper-article-type";
+import { loadPubmedSummariesByIds } from "@/lib/pubmed-summary-loader";
+import {
+  pubmedEsearch,
+  randomDelay,
+  type PubmedSummary,
+} from "@/lib/pubmed-sync-client";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
   listSemanticScholarCandidatesForQualityRefresh,
+  listSemanticScholarCandidatesForPromotionDryRun,
   listPapersForSemanticScholarEnrichment,
   listSemanticScholarRecommendationSeeds,
   loadKnownPaperDois,
   loadKnownSemanticScholarIds,
+  loadSemanticScholarEnrichmentPaperIdsByS2Ids,
   purgeExpiredSemanticScholarCandidates,
   updateSemanticScholarCandidateQualityRows,
+  updateSemanticScholarCandidatePromotionRows,
   upsertSemanticScholarCandidates,
   upsertSemanticScholarEnrichments,
   type PaperForSemanticScholarEnrichment,
   type SemanticScholarCandidateRow,
+  type SemanticScholarCandidatePromotionRow,
+  type SemanticScholarCandidatePromotionUpdate,
   type SemanticScholarCandidateQualityRefreshRow,
   type SemanticScholarCandidateQualityUpdate,
   type SemanticScholarEnrichmentRow,
 } from "@/server/repositories/semantic-scholar";
+import { calculateAiMedScore } from "@/server/repositories/pubmed-sync";
 
 export type SemanticScholarEnrichmentOptions = {
   batchSize?: number;
@@ -41,6 +54,12 @@ export type SemanticScholarCandidateQualityOptions = {
   limit?: number;
 };
 
+export type SemanticScholarPromotionDryRunOptions = {
+  limit?: number;
+  includeRejected?: boolean;
+  updateCandidates?: boolean;
+};
+
 export type SemanticScholarCandidateQuality = {
   score: number;
   eligibleForPromotion: boolean;
@@ -55,6 +74,12 @@ export type SemanticScholarCandidateQuality = {
     citationCount: number;
     influentialCitationCount: number;
   };
+};
+
+export type SemanticScholarPromotionDecision = {
+  wouldPromote: boolean;
+  promotionScore: number;
+  reasons: string[];
 };
 
 function asString(value: unknown) {
@@ -163,6 +188,74 @@ function countWords(text: string | null | undefined) {
 
 function clampQualityScore(value: number) {
   return Number(Math.max(0, Math.min(1, value)).toFixed(4));
+}
+
+function quotePubmedSearchLiteral(value: string) {
+  return `"${value.replace(/["\\]/g, " ").replace(/\s+/g, " ").trim()}"`;
+}
+
+export function buildPubmedLookupTermsForSemanticScholarCandidate(input: {
+  doi?: string | null;
+  pmid?: string | null;
+}) {
+  const doi = normalizeDoi(input.doi) || normalizeDoiLikeIdentifier(input.pmid);
+  if (!doi) return [] as string[];
+  const literal = quotePubmedSearchLiteral(doi);
+  return [`${literal}[AID]`, `${literal}[DOI]`];
+}
+
+export function evaluateSemanticScholarPromotionDecision(args: {
+  candidateEligible: boolean;
+  candidateReviewLike: boolean;
+  candidateQualityScore: number;
+  pubmedVerified: boolean;
+  isAiMed: boolean;
+  aiMedScore: number;
+  pubmedReviewLike: boolean;
+}): SemanticScholarPromotionDecision {
+  const reasons: string[] = [];
+  if (args.candidateEligible) {
+    reasons.push("candidate_quality_pass");
+  } else {
+    reasons.push("candidate_quality_hold");
+  }
+  if (args.candidateReviewLike) reasons.push("candidate_review_like");
+  if (args.pubmedVerified) {
+    reasons.push("pubmed_verified");
+  } else {
+    reasons.push("pubmed_not_verified");
+  }
+  if (args.isAiMed) {
+    reasons.push("ai_med_score_pass");
+  } else {
+    reasons.push("ai_med_score_fail");
+  }
+  if (args.pubmedReviewLike) {
+    reasons.push("pubmed_review_like");
+  } else if (args.pubmedVerified) {
+    reasons.push("pubmed_original_candidate");
+  }
+
+  const promotionScore = clampQualityScore(
+    args.candidateQualityScore * 0.45 +
+      args.aiMedScore * 0.45 +
+      (args.pubmedVerified ? 0.1 : 0),
+  );
+  const wouldPromote =
+    args.candidateEligible &&
+    args.pubmedVerified &&
+    args.isAiMed &&
+    !args.candidateReviewLike &&
+    !args.pubmedReviewLike &&
+    promotionScore >= 0.6;
+
+  reasons.push(wouldPromote ? "would_promote_after_review" : "dry_run_hold");
+
+  return {
+    wouldPromote,
+    promotionScore,
+    reasons: Array.from(new Set(reasons)),
+  };
 }
 
 function qualityFromCandidateFields(input: {
@@ -297,6 +390,65 @@ function scoreSemanticScholarCandidateRow(
   });
 }
 
+async function resolvePubmedIdsForCandidate(candidate: Pick<SemanticScholarCandidatePromotionRow, "doi" | "pmid">) {
+  const pmid = normalizePmid(candidate.pmid);
+  if (isNumericPmid(pmid)) return [pmid];
+
+  const terms = buildPubmedLookupTermsForSemanticScholarCandidate(candidate);
+  const ids: string[] = [];
+  for (const term of terms) {
+    const found = await pubmedEsearch(term, 5);
+    ids.push(...found);
+    if (ids.length) break;
+    await randomDelay(120, 220);
+  }
+  return dedupeStrings(ids, 5);
+}
+
+function chooseVerifiedPubmedSummary(
+  candidate: Pick<SemanticScholarCandidatePromotionRow, "doi" | "pmid">,
+  summaries: PubmedSummary[],
+) {
+  const candidatePmid = normalizePmid(candidate.pmid);
+  const candidateDoi = normalizeDoi(candidate.doi) || normalizeDoiLikeIdentifier(candidate.pmid);
+  return (
+    summaries.find((summary) => isNumericPmid(candidatePmid) && summary.pmid === candidatePmid) ??
+    summaries.find((summary) => candidateDoi && normalizeDoi(summary.doi) === candidateDoi) ??
+    null
+  );
+}
+
+function skippedPromotionUpdate(args: {
+  candidate: SemanticScholarCandidatePromotionRow;
+  checkedAt: string;
+  reasons: string[];
+}) {
+  const decision = evaluateSemanticScholarPromotionDecision({
+    candidateEligible: Boolean(args.candidate.eligible_for_promotion),
+    candidateReviewLike: Boolean(args.candidate.is_review_like),
+    candidateQualityScore: asNumber(args.candidate.quality_score) ?? 0,
+    pubmedVerified: false,
+    isAiMed: false,
+    aiMedScore: 0,
+    pubmedReviewLike: false,
+  });
+  return {
+    s2_paper_id: args.candidate.s2_paper_id,
+    pubmed_verification_status: "skipped" as const,
+    pubmed_verified_pmid: null,
+    pubmed_verified_at: null,
+    promotion_score: decision.promotionScore,
+    promotion_reasons: Array.from(new Set([...args.reasons, ...decision.reasons])),
+    promotion_checked_at: args.checkedAt,
+    promotion_dry_run_payload: {
+      dryRun: true,
+      wouldPromote: false,
+      candidateTitle: args.candidate.title,
+    },
+    updated_at: args.checkedAt,
+  };
+}
+
 export function mapSemanticScholarPaperToEnrichmentRow(args: {
   source: PaperForSemanticScholarEnrichment;
   paper: SemanticScholarPaper;
@@ -331,6 +483,110 @@ export function mapSemanticScholarPaperToEnrichmentRow(args: {
     raw_payload: paper as Record<string, unknown>,
     last_enriched_at: args.enrichedAt ?? new Date().toISOString(),
   };
+}
+
+export function mapSemanticScholarUnmatchedToEnrichmentRow(args: {
+  source: PaperForSemanticScholarEnrichment;
+  lookupId: string;
+  enrichedAt?: string;
+}): SemanticScholarEnrichmentRow {
+  const enrichedAt = args.enrichedAt ?? new Date().toISOString();
+  return {
+    paper_id: args.source.id,
+    pmid: args.source.pmid,
+    doi: normalizeDoi(args.source.doi) || normalizeDoiLikeIdentifier(args.source.pmid) || null,
+    s2_paper_id: null,
+    corpus_id: null,
+    s2_url: null,
+    title: args.source.title,
+    venue: null,
+    year: null,
+    publication_date: null,
+    reference_count: null,
+    citation_count: 0,
+    influential_citation_count: 0,
+    is_open_access: null,
+    open_access_pdf_url: null,
+    open_access_pdf_status: null,
+    fields_of_study: [],
+    publication_types: [],
+    external_ids: {},
+    raw_payload: {
+      unmatched: true,
+      lookupId: args.lookupId,
+      markedAt: enrichedAt,
+    },
+    last_enriched_at: enrichedAt,
+  };
+}
+
+function mapSemanticScholarDuplicateToEnrichmentRow(args: {
+  row: SemanticScholarEnrichmentRow;
+  duplicateS2PaperId: string;
+  enrichedAt: string;
+}): SemanticScholarEnrichmentRow {
+  return {
+    ...args.row,
+    s2_paper_id: null,
+    corpus_id: null,
+    s2_url: null,
+    reference_count: null,
+    citation_count: 0,
+    influential_citation_count: 0,
+    is_open_access: null,
+    open_access_pdf_url: null,
+    open_access_pdf_status: null,
+    raw_payload: {
+      duplicate: true,
+      duplicateS2PaperId: args.duplicateS2PaperId,
+      markedAt: args.enrichedAt,
+    },
+    last_enriched_at: args.enrichedAt,
+  };
+}
+
+async function filterDuplicateSemanticScholarEnrichmentRows(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  rows: SemanticScholarEnrichmentRow[],
+  enrichedAt: string,
+) {
+  const s2Ids = rows
+    .map((row) => row.s2_paper_id)
+    .filter((id): id is string => Boolean(id));
+  const existingByS2Id = await loadSemanticScholarEnrichmentPaperIdsByS2Ids(supabase, s2Ids);
+  const seenByS2Id = new Map<string, string>();
+  const safeRows: SemanticScholarEnrichmentRow[] = [];
+  let duplicateS2Count = 0;
+
+  for (const row of rows) {
+    const s2PaperId = row.s2_paper_id;
+    if (!s2PaperId) {
+      safeRows.push(row);
+      continue;
+    }
+
+    const existingPaperId = existingByS2Id.get(s2PaperId);
+    const seenPaperId = seenByS2Id.get(s2PaperId);
+    if (
+      (existingPaperId && existingPaperId !== row.paper_id) ||
+      (seenPaperId && seenPaperId !== row.paper_id)
+    ) {
+      duplicateS2Count += 1;
+      safeRows.push(
+        mapSemanticScholarDuplicateToEnrichmentRow({
+          row,
+          duplicateS2PaperId: s2PaperId,
+          enrichedAt,
+        }),
+      );
+      continue;
+    }
+
+    seenByS2Id.set(s2PaperId, row.paper_id);
+    safeRows.push(row);
+  }
+
+  return { rows: safeRows, duplicateS2Count };
 }
 
 function mapSemanticScholarPaperToCandidateRow(args: {
@@ -402,13 +658,24 @@ export async function runSemanticScholarEnrichmentJob(
   const enrichedAt = new Date().toISOString();
   const rows: SemanticScholarEnrichmentRow[] = [];
   const unmatched: Array<{ pmid: string; lookupId: string }> = [];
+  let matchedCount = 0;
 
   papers.forEach((paper, index) => {
     const result = results[index] ?? null;
     if (!result || !semanticScholarPaperMatchesSource(result, paper)) {
       unmatched.push({ pmid: paper.pmid, lookupId: ids[index] });
+      if (!paper.previous_s2_paper_id) {
+        rows.push(
+          mapSemanticScholarUnmatchedToEnrichmentRow({
+            source: paper,
+            lookupId: ids[index],
+            enrichedAt,
+          }),
+        );
+      }
       return;
     }
+    matchedCount += 1;
     rows.push(
       mapSemanticScholarPaperToEnrichmentRow({
         source: paper,
@@ -418,11 +685,17 @@ export async function runSemanticScholarEnrichmentJob(
     );
   });
 
-  const upsert = await upsertSemanticScholarEnrichments(supabase, rows);
+  const deduped = await filterDuplicateSemanticScholarEnrichmentRows(
+    supabase,
+    rows,
+    enrichedAt,
+  );
+  const upsert = await upsertSemanticScholarEnrichments(supabase, deduped.rows);
   return {
     selectedCount: papers.length,
-    matchedCount: rows.length,
+    matchedCount,
     upsertedCount: upsert.upsertedCount,
+    duplicateS2Count: deduped.duplicateS2Count,
     unmatchedCount: unmatched.length,
     unmatched: unmatched.slice(0, 20),
     batchSize,
@@ -538,5 +811,234 @@ export async function runSemanticScholarCandidateQualityRefreshJob(
     rejectedCount: updates.filter((row) => row.status === "rejected").length,
     reviewLikeCount: updates.filter((row) => row.is_review_like).length,
     limit,
+  };
+}
+
+export async function runSemanticScholarPromotionDryRunJob(
+  options: SemanticScholarPromotionDryRunOptions = {},
+) {
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)));
+  const includeRejected = Boolean(options.includeRejected);
+  const updateCandidates = options.updateCandidates ?? true;
+  const supabase = createServiceSupabaseClient();
+  const candidates = await listSemanticScholarCandidatesForPromotionDryRun(supabase, {
+    limit,
+    includeRejected,
+  });
+  const checkedAt = new Date().toISOString();
+  const updates: SemanticScholarCandidatePromotionUpdate[] = [];
+  const results: Array<{
+    s2PaperId: string;
+    title: string;
+    status: string;
+    verifiedPmid: string | null;
+    wouldPromote: boolean;
+    promotionScore: number;
+    reasons: string[];
+  }> = [];
+
+  for (const candidate of candidates) {
+    if (!candidate.eligible_for_promotion || candidate.is_review_like) {
+      const update = skippedPromotionUpdate({
+        candidate,
+        checkedAt,
+        reasons: ["skipped_before_pubmed_lookup"],
+      });
+      updates.push(update);
+      results.push({
+        s2PaperId: candidate.s2_paper_id,
+        title: candidate.title,
+        status: update.pubmed_verification_status,
+        verifiedPmid: null,
+        wouldPromote: false,
+        promotionScore: update.promotion_score,
+        reasons: update.promotion_reasons,
+      });
+      continue;
+    }
+
+    try {
+      const ids = await resolvePubmedIdsForCandidate(candidate);
+      if (!ids.length) {
+        const decision = evaluateSemanticScholarPromotionDecision({
+          candidateEligible: Boolean(candidate.eligible_for_promotion),
+          candidateReviewLike: Boolean(candidate.is_review_like),
+          candidateQualityScore: asNumber(candidate.quality_score) ?? 0,
+          pubmedVerified: false,
+          isAiMed: false,
+          aiMedScore: 0,
+          pubmedReviewLike: false,
+        });
+        const update: SemanticScholarCandidatePromotionUpdate = {
+          s2_paper_id: candidate.s2_paper_id,
+          pubmed_verification_status: "not_found",
+          pubmed_verified_pmid: null,
+          pubmed_verified_at: null,
+          promotion_score: decision.promotionScore,
+          promotion_reasons: decision.reasons,
+          promotion_checked_at: checkedAt,
+          promotion_dry_run_payload: {
+            dryRun: true,
+            wouldPromote: false,
+            candidateTitle: candidate.title,
+          },
+          updated_at: checkedAt,
+        };
+        updates.push(update);
+        results.push({
+          s2PaperId: candidate.s2_paper_id,
+          title: candidate.title,
+          status: update.pubmed_verification_status,
+          verifiedPmid: null,
+          wouldPromote: false,
+          promotionScore: update.promotion_score,
+          reasons: update.promotion_reasons,
+        });
+        continue;
+      }
+
+      const summaries = await loadPubmedSummariesByIds(ids, {
+        chunkSize: 5,
+        includeAbstracts: true,
+      });
+      const summary = chooseVerifiedPubmedSummary(candidate, summaries);
+      if (!summary) {
+        const decision = evaluateSemanticScholarPromotionDecision({
+          candidateEligible: Boolean(candidate.eligible_for_promotion),
+          candidateReviewLike: Boolean(candidate.is_review_like),
+          candidateQualityScore: asNumber(candidate.quality_score) ?? 0,
+          pubmedVerified: false,
+          isAiMed: false,
+          aiMedScore: 0,
+          pubmedReviewLike: false,
+        });
+        const update: SemanticScholarCandidatePromotionUpdate = {
+          s2_paper_id: candidate.s2_paper_id,
+          pubmed_verification_status: "not_found",
+          pubmed_verified_pmid: null,
+          pubmed_verified_at: null,
+          promotion_score: decision.promotionScore,
+          promotion_reasons: [...decision.reasons, "pubmed_summary_mismatch"],
+          promotion_checked_at: checkedAt,
+          promotion_dry_run_payload: {
+            dryRun: true,
+            wouldPromote: false,
+            candidateTitle: candidate.title,
+            pubmedIds: ids,
+          },
+          updated_at: checkedAt,
+        };
+        updates.push(update);
+        results.push({
+          s2PaperId: candidate.s2_paper_id,
+          title: candidate.title,
+          status: update.pubmed_verification_status,
+          verifiedPmid: null,
+          wouldPromote: false,
+          promotionScore: update.promotion_score,
+          reasons: update.promotion_reasons,
+        });
+        continue;
+      }
+
+      const { data: rpcScore, error: rpcError } = await calculateAiMedScore(supabase, {
+        title: summary.title,
+        abstract: summary.abstract ?? candidate.abstract ?? "",
+      });
+      if (rpcError) {
+        throw new Error(`calculate_ai_med_score failed: ${rpcError.message}`);
+      }
+      const scoreObj = (rpcScore ?? {}) as { is_ai_med?: boolean; score?: number | string };
+      const isAiMed = Boolean(scoreObj.is_ai_med);
+      const aiMedScore = asNumber(scoreObj.score) ?? 0;
+      const pubmedReviewLike = isReviewLikePaper(summary);
+      const decision = evaluateSemanticScholarPromotionDecision({
+        candidateEligible: Boolean(candidate.eligible_for_promotion),
+        candidateReviewLike: Boolean(candidate.is_review_like),
+        candidateQualityScore: asNumber(candidate.quality_score) ?? 0,
+        pubmedVerified: true,
+        isAiMed,
+        aiMedScore,
+        pubmedReviewLike,
+      });
+      const update: SemanticScholarCandidatePromotionUpdate = {
+        s2_paper_id: candidate.s2_paper_id,
+        pubmed_verification_status: "verified",
+        pubmed_verified_pmid: summary.pmid,
+        pubmed_verified_at: checkedAt,
+        promotion_score: decision.promotionScore,
+        promotion_reasons: decision.reasons,
+        promotion_checked_at: checkedAt,
+        promotion_dry_run_payload: {
+          dryRun: true,
+          wouldPromote: decision.wouldPromote,
+          candidateTitle: candidate.title,
+          pubmedTitle: summary.title,
+          pubmedDoi: summary.doi ?? null,
+          aiMedScore,
+          isAiMed,
+          pubmedReviewLike,
+        },
+        updated_at: checkedAt,
+      };
+      updates.push(update);
+      results.push({
+        s2PaperId: candidate.s2_paper_id,
+        title: candidate.title,
+        status: update.pubmed_verification_status,
+        verifiedPmid: summary.pmid,
+        wouldPromote: decision.wouldPromote,
+        promotionScore: decision.promotionScore,
+        reasons: decision.reasons,
+      });
+      await randomDelay(120, 220);
+    } catch (error) {
+      const update: SemanticScholarCandidatePromotionUpdate = {
+        s2_paper_id: candidate.s2_paper_id,
+        pubmed_verification_status: "failed",
+        pubmed_verified_pmid: null,
+        pubmed_verified_at: null,
+        promotion_score: 0,
+        promotion_reasons: [
+          "pubmed_lookup_failed",
+          error instanceof Error ? error.message.slice(0, 160) : "unknown error",
+        ],
+        promotion_checked_at: checkedAt,
+        promotion_dry_run_payload: {
+          dryRun: true,
+          wouldPromote: false,
+          candidateTitle: candidate.title,
+        },
+        updated_at: checkedAt,
+      };
+      updates.push(update);
+      results.push({
+        s2PaperId: candidate.s2_paper_id,
+        title: candidate.title,
+        status: update.pubmed_verification_status,
+        verifiedPmid: null,
+        wouldPromote: false,
+        promotionScore: 0,
+        reasons: update.promotion_reasons,
+      });
+    }
+  }
+
+  const updateResult = updateCandidates
+    ? await updateSemanticScholarCandidatePromotionRows(supabase, updates)
+    : { updatedCount: 0 };
+
+  return {
+    scannedCount: candidates.length,
+    updatedCount: updateResult.updatedCount,
+    wouldPromoteCount: results.filter((result) => result.wouldPromote).length,
+    verifiedCount: results.filter((result) => result.status === "verified").length,
+    notFoundCount: results.filter((result) => result.status === "not_found").length,
+    skippedCount: results.filter((result) => result.status === "skipped").length,
+    failedCount: results.filter((result) => result.status === "failed").length,
+    includeRejected,
+    updateCandidates,
+    limit,
+    sample: results.slice(0, 10),
   };
 }

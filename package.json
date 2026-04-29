@@ -9,8 +9,12 @@
     "lint": "eslint",
     "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "env:check": "tsx src/scripts/check-env.ts",
+    "literature:review": "tsx src/scripts/weekly-literature-review.ts",
+    "literature:refresh": "tsx src/scripts/weekly-literature-review.ts --refresh --discovery",
     "db:types": "tsx src/scripts/generate-supabase-types.ts",
     "db:export-contracts": "node src/scripts/export-db-contracts.mjs",
+    "model-hub:curation": "tsx src/scripts/upsert-confirmed-model-hub-curation.ts",
+    "model-hub:github-sync": "tsx src/scripts/sync-model-hub-github.ts",
     "seed:journals": "npx tsx src/scripts/seed.ts",
     "seed:topics": "npx tsx src/scripts/seed-topics.ts"
   },

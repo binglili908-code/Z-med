@@ -51,13 +51,28 @@ type ModelHubSyncRunFinish = {
   meta?: Record<string, unknown>;
 };
 
-const MODEL_HUB_ITEM_SELECT =
+const MODEL_HUB_ITEM_LEGACY_SELECT =
   "id,github_id,full_name,owner,name,html_url,description,language,license_spdx,topics,stargazers_count,forks_count,open_issues_count,watchers_count,pushed_at,github_created_at,github_updated_at,homepage,default_branch,category,task_types,domain_tags,model_signals,quality_flags,recommendation_score,recommendation_reason,source_queries,last_synced_at";
+
+const MODEL_HUB_ITEM_CURATION_SELECT =
+  "curator_summary,curated_recommendation_reason,project_understanding,risk_notes,target_users,curation_tags,curated_score,curation_status,curated_at,curated_by,curation_notes";
+
+const MODEL_HUB_ITEM_SELECT = `${MODEL_HUB_ITEM_LEGACY_SELECT},${MODEL_HUB_ITEM_CURATION_SELECT}`;
 
 function normalizeTextArray(input: unknown): string[] {
   return Array.isArray(input)
     ? input.map((value) => String(value)).filter(Boolean)
     : [];
+}
+
+function normalizeNullableString(input: unknown): string | null {
+  return typeof input === "string" && input.trim() ? input : null;
+}
+
+function normalizeNullableNumber(input: unknown): number | null {
+  if (input == null) return null;
+  const value = Number(input);
+  return Number.isFinite(value) ? value : null;
 }
 
 function normalizeModelHubItem(row: Record<string, unknown>): ModelHubItem {
@@ -91,18 +106,48 @@ function normalizeModelHubItem(row: Record<string, unknown>): ModelHubItem {
     recommendation_score: Number(row.recommendation_score ?? 0),
     recommendation_reason:
       typeof row.recommendation_reason === "string" ? row.recommendation_reason : null,
+    curator_summary: normalizeNullableString(row.curator_summary),
+    curated_recommendation_reason: normalizeNullableString(row.curated_recommendation_reason),
+    project_understanding: normalizeNullableString(row.project_understanding),
+    risk_notes: normalizeNullableString(row.risk_notes),
+    target_users: normalizeTextArray(row.target_users),
+    curation_tags: normalizeTextArray(row.curation_tags),
+    curated_score: normalizeNullableNumber(row.curated_score),
+    curation_status: normalizeNullableString(row.curation_status),
+    curated_at: typeof row.curated_at === "string" ? row.curated_at : null,
+    curated_by: normalizeNullableString(row.curated_by),
+    curation_notes: normalizeNullableString(row.curation_notes),
     source_queries: normalizeTextArray(row.source_queries),
     last_synced_at: typeof row.last_synced_at === "string" ? row.last_synced_at : null,
   };
 }
 
-export async function listModelHubItems(
+function isMissingCurationColumnError(error: { message?: string; code?: string }) {
+  const message = (error.message ?? "").toLowerCase();
+  return (
+    error.code === "PGRST204" ||
+    error.code === "42703" ||
+    MODEL_HUB_ITEM_CURATION_SELECT.split(",").some((column) =>
+      message.includes(column.toLowerCase()),
+    )
+  );
+}
+
+async function queryModelHubItems(
   client: SupabaseDbClient,
   params: { category?: string | null; limit: number },
-): Promise<ModelHubResponse> {
+  select: string,
+  useCurationOrdering: boolean,
+) {
   let query = client
     .from("model_hub_items")
-    .select(MODEL_HUB_ITEM_SELECT, { count: "exact" })
+    .select(select, { count: "exact" });
+
+  if (useCurationOrdering) {
+    query = query.order("curated_score", { ascending: false, nullsFirst: false });
+  }
+
+  query = query
     .order("recommendation_score", { ascending: false })
     .order("stargazers_count", { ascending: false })
     .limit(params.limit);
@@ -112,12 +157,38 @@ export async function listModelHubItems(
     query = query.eq("category", category);
   }
 
-  const { data, error, count } = await query;
+  return query;
+}
+
+export async function listModelHubItems(
+  client: SupabaseDbClient,
+  params: { category?: string | null; limit: number },
+): Promise<ModelHubResponse> {
+  const category = params.category?.trim();
+  let { data, error, count } = await queryModelHubItems(
+    client,
+    params,
+    MODEL_HUB_ITEM_SELECT,
+    true,
+  );
+  if (error && isMissingCurationColumnError(error)) {
+    const fallback = await queryModelHubItems(
+      client,
+      params,
+      MODEL_HUB_ITEM_LEGACY_SELECT,
+      false,
+    );
+    data = fallback.data;
+    error = fallback.error;
+    count = fallback.count;
+  }
   if (error) {
     throw new Error(`Failed to load model hub items: ${error.message}`);
   }
 
-  const items = ((data ?? []) as Record<string, unknown>[]).map(normalizeModelHubItem);
+  const items = ((data ?? []) as unknown as Record<string, unknown>[]).map(
+    normalizeModelHubItem,
+  );
   const lastSyncedAt =
     items
       .map((item) => item.last_synced_at)

@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildPubmedLookupTermsForSemanticScholarCandidate,
   buildSemanticScholarLookupId,
+  evaluateSemanticScholarPromotionDecision,
   mapSemanticScholarPaperToEnrichmentRow,
+  mapSemanticScholarUnmatchedToEnrichmentRow,
   scoreSemanticScholarCandidatePaper,
 } from "../src/lib/semantic-scholar";
 
@@ -31,6 +34,23 @@ test("treats legacy DOI-like PMID values as DOI lookup IDs", () => {
       pmid: "10.1038/s41746-026-02602-9",
     }),
     "DOI:10.1038/s41746-026-02602-9",
+  );
+});
+
+test("builds conservative PubMed DOI lookup terms for promotion dry runs", () => {
+  assert.deepEqual(
+    buildPubmedLookupTermsForSemanticScholarCandidate({
+      doi: "https://doi.org/10.1000/Example",
+      pmid: null,
+    }),
+    ['"10.1000/example"[AID]', '"10.1000/example"[DOI]'],
+  );
+  assert.deepEqual(
+    buildPubmedLookupTermsForSemanticScholarCandidate({
+      doi: null,
+      pmid: "12345",
+    }),
+    [],
   );
 });
 
@@ -79,6 +99,28 @@ test("maps Semantic Scholar paper details into the enrichment row shape", () => 
   assert.equal(row.last_enriched_at, "2026-04-29T00:00:00.000Z");
 });
 
+test("marks unmatched Semantic Scholar enrichment attempts without an S2 id", () => {
+  const row = mapSemanticScholarUnmatchedToEnrichmentRow({
+    enrichedAt: "2026-04-29T00:00:00.000Z",
+    lookupId: "PMID:123",
+    source: {
+      id: "paper-id",
+      pmid: "123",
+      doi: null,
+      title: "Missing from Semantic Scholar",
+    },
+  });
+
+  assert.equal(row.paper_id, "paper-id");
+  assert.equal(row.s2_paper_id, null);
+  assert.equal(row.title, "Missing from Semantic Scholar");
+  assert.deepEqual(row.raw_payload, {
+    unmatched: true,
+    lookupId: "PMID:123",
+    markedAt: "2026-04-29T00:00:00.000Z",
+  });
+});
+
 test("holds review-like Semantic Scholar candidates even when topic fields match", () => {
   const quality = scoreSemanticScholarCandidatePaper({
     paperId: "s2-review",
@@ -120,4 +162,34 @@ test("marks original medical AI candidates as eligible for PubMed verification",
   assert.ok(quality.score >= 0.55);
   assert.ok(quality.reasons.includes("has_pmid"));
   assert.ok(quality.reasons.includes("substantial_abstract"));
+});
+
+test("promotion dry-run decision requires PubMed verification and original AI-med evidence", () => {
+  const promoted = evaluateSemanticScholarPromotionDecision({
+    candidateEligible: true,
+    candidateReviewLike: false,
+    candidateQualityScore: 0.72,
+    pubmedVerified: true,
+    isAiMed: true,
+    aiMedScore: 0.7,
+    pubmedReviewLike: false,
+  });
+
+  assert.equal(promoted.wouldPromote, true);
+  assert.ok(promoted.reasons.includes("pubmed_verified"));
+  assert.ok(promoted.reasons.includes("would_promote_after_review"));
+
+  const held = evaluateSemanticScholarPromotionDecision({
+    candidateEligible: true,
+    candidateReviewLike: false,
+    candidateQualityScore: 0.72,
+    pubmedVerified: true,
+    isAiMed: true,
+    aiMedScore: 0.7,
+    pubmedReviewLike: true,
+  });
+
+  assert.equal(held.wouldPromote, false);
+  assert.ok(held.reasons.includes("pubmed_review_like"));
+  assert.ok(held.reasons.includes("dry_run_hold"));
 });

@@ -8,19 +8,13 @@
    - Environments: .env.local
 
  ✓ Starting...
- ✓ Ready in 2.8s
- ○ Compiling /api/cron/github-model-hub-sync ...
- ✓ Compiled /api/cron/github-model-hub-sync in 779ms (424 modules)
- GET /api/cron/github-model-hub-sync?queryLimit=8&perPage=30 200 in 23521ms
+ ✓ Ready in 3s
  ○ Compiling /model-hub ...
- ✓ Compiled /model-hub in 979ms (895 modules)
- GET /model-hub 200 in 4292ms
- ✓ Compiled in 1440ms (300 modules)
- ✓ Compiled /model-hub in 266ms (585 modules)
- GET /model-hub 200 in 3011ms
- ✓ Compiled in 280ms (300 modules)
- ✓ Compiled in 162ms (300 modules)
- ✓ Compiled in 467ms (300 modules)
- ✓ Compiled in 311ms (300 modules)
- ✓ Compiled in 158ms (300 modules)
- ✓ Compiled in 228ms (300 modules)
+ ✓ Compiled /model-hub in 3.3s (892 modules)
+ GET /model-hub 200 in 9489ms
+ ✓ Compiled in 880ms (299 modules)
+ ✓ Compiled in 235ms (299 modules)
+ ✓ Compiled in 357ms (285 modules)
+ ✓ Compiled in 263ms (299 modules)
+ ✓ Compiled in 192ms (299 modules)
+ ✓ Compiled in 160ms (299 modules)

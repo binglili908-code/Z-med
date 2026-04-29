@@ -1,0 +1,21 @@
+{
+  "curation_date": "YYYY-MM-DD",
+  "curated_by": "Codex",
+  "notes": "Model Hub curation preview. Keep confirmed false until the owner approves.",
+  "candidates": [
+    {
+      "full_name": "owner/repo",
+      "github_id": null,
+      "confirmed": false,
+      "curation_status": "featured",
+      "curated_score": 90,
+      "curator_summary": "One sentence summary for the public card.",
+      "curated_recommendation_reason": "Why this project deserves attention now.",
+      "project_understanding": "Short technical understanding of what the project actually provides.",
+      "risk_notes": "License, maintenance, clinical, data, or reproducibility caveats.",
+      "target_users": ["researcher"],
+      "curation_tags": ["active"],
+      "curation_notes": "Internal review note."
+    }
+  ]
+}

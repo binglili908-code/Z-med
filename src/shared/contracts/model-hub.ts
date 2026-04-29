@@ -25,6 +25,17 @@ export type ModelHubItem = {
   quality_flags: string[];
   recommendation_score: number;
   recommendation_reason: string | null;
+  curator_summary: string | null;
+  curated_recommendation_reason: string | null;
+  project_understanding: string | null;
+  risk_notes: string | null;
+  target_users: string[];
+  curation_tags: string[];
+  curated_score: number | null;
+  curation_status: string | null;
+  curated_at: string | null;
+  curated_by: string | null;
+  curation_notes: string | null;
   source_queries: string[];
   last_synced_at: string | null;
 };

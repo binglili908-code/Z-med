@@ -39,10 +39,6 @@
     {
       "path": "/api/cron/quality-recompute",
       "schedule": "45 3 * * *"
-    },
-    {
-      "path": "/api/cron/github-model-hub-sync",
-      "schedule": "45 4 * * *"
     }
   ]
 }

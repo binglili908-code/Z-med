@@ -8,7 +8,10 @@ import {
   GitFork,
   Github,
   Search,
+  ShieldAlert,
+  Sparkles,
   Star,
+  Users,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -64,6 +67,14 @@ const FLAG_LABELS: Record<string, string> = {
   "needs-review": "需人工复核",
   "resource-list": "资源集",
   stale: "更新较旧",
+};
+
+const CURATION_STATUS_LABELS: Record<string, string> = {
+  archived: "Archived",
+  featured: "Featured",
+  hold: "Hold",
+  recommended: "Recommended",
+  watchlist: "Watchlist",
 };
 
 function formatCount(value: number) {
@@ -153,6 +164,11 @@ function ModelCard({ item }: { item: ModelHubItem }) {
   const tags = [...item.domain_tags, ...item.task_types].slice(0, 5);
   const signals = item.model_signals.slice(0, 3);
   const flags = item.quality_flags.slice(0, 3);
+  const targetUsers = item.target_users.slice(0, 4);
+  const curationTags = item.curation_tags.slice(0, 4);
+  const displayScore = item.curated_score ?? item.recommendation_score;
+  const recommendation =
+    item.curated_recommendation_reason ?? item.recommendation_reason;
 
   return (
     <Card className="overflow-hidden rounded-lg">
@@ -160,6 +176,11 @@ function ModelCard({ item }: { item: ModelHubItem }) {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
+              {item.curation_status ? (
+                <Badge tone="brand">
+                  {labelFor(CURATION_STATUS_LABELS, item.curation_status)}
+                </Badge>
+              ) : null}
               <Badge tone="teal">{labelFor(CATEGORY_LABELS, item.category)}</Badge>
               {item.language ? <Badge>{item.language}</Badge> : null}
               {item.license_spdx ? <Badge>{item.license_spdx}</Badge> : null}
@@ -169,14 +190,23 @@ function ModelCard({ item }: { item: ModelHubItem }) {
             </h2>
           </div>
           <div className="rounded-lg bg-slate-900 px-3 py-2 text-right text-white">
-            <div className="text-xs text-slate-300">Score</div>
-            <div className="text-lg font-semibold">{Math.round(item.recommendation_score)}</div>
+            <div className="text-xs text-slate-300">
+              {item.curated_score == null ? "Score" : "Curated"}
+            </div>
+            <div className="text-lg font-semibold">{Math.round(displayScore)}</div>
           </div>
         </div>
 
         <p className="mt-3 line-clamp-3 min-h-[4.5rem] text-sm leading-6 text-slate-600">
           {item.description?.trim() || "暂无项目描述。"}
         </p>
+
+        {item.curator_summary ? (
+          <div className="mt-3 flex gap-2 rounded-lg border border-teal-100 bg-teal-50 px-3 py-2 text-sm leading-6 text-teal-900">
+            <Sparkles className="mt-1 h-4 w-4 shrink-0" />
+            <p>{item.curator_summary}</p>
+          </div>
+        ) : null}
 
         <div className="mt-4 grid grid-cols-2 gap-2">
           <Metric icon={Star} label="Stars" value={formatCount(item.stargazers_count)} />
@@ -201,6 +231,25 @@ function ModelCard({ item }: { item: ModelHubItem }) {
           </div>
         ) : null}
 
+        {targetUsers.length ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Users className="h-4 w-4 text-slate-500" />
+            {targetUsers.map((targetUser) => (
+              <Badge key={targetUser}>{targetUser}</Badge>
+            ))}
+          </div>
+        ) : null}
+
+        {curationTags.length ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {curationTags.map((tag) => (
+              <Badge key={tag} tone="brand">
+                {tag}
+              </Badge>
+            ))}
+          </div>
+        ) : null}
+
         {flags.length ? (
           <div className="mt-3 flex flex-wrap gap-2">
             {flags.map((flag) => (
@@ -214,9 +263,22 @@ function ModelCard({ item }: { item: ModelHubItem }) {
           </div>
         ) : null}
 
-        <p className="mt-4 text-sm leading-6 text-slate-700">
-          {item.recommendation_reason}
-        </p>
+        {recommendation ? (
+          <p className="mt-4 text-sm leading-6 text-slate-700">{recommendation}</p>
+        ) : null}
+
+        {item.project_understanding ? (
+          <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-700">
+            {item.project_understanding}
+          </p>
+        ) : null}
+
+        {item.risk_notes ? (
+          <div className="mt-3 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
+            <ShieldAlert className="mt-1 h-4 w-4 shrink-0" />
+            <p>{item.risk_notes}</p>
+          </div>
+        ) : null}
 
         <div className="mt-auto flex items-center justify-between gap-3 pt-5">
           <div className="flex min-w-0 items-center gap-2 text-xs text-slate-500">

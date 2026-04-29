@@ -12,8 +12,8 @@ README archive, or model artifact host.
 ## App Files That Depend On This Contract
 
 - `src/app/model-hub/page.tsx`
-- `src/app/api/cron/github-model-hub-sync/route.ts`
 - `src/lib/github-model-hub.ts`
+- `src/scripts/sync-model-hub-github.ts`
 - `src/server/repositories/model-hub.ts`
 - `src/shared/contracts/model-hub.ts`
 - `src/shared/contracts/model-hub.schema.ts`
@@ -38,17 +38,19 @@ It creates:
 - `model_hub_items` is public readable through RLS because the page is public
   content and contains only public GitHub metadata.
 - `model_hub_sync_runs` is admin-readable only.
-- Writes are performed by the server-side service role from the protected cron
-  route.
+- Writes are performed by the server-side service role from the explicit local
+  manual intake script, not by a scheduled production cron.
 
 ## Rollout Order
 
 1. Apply `sql/p11_model_hub_github_sync.sql` in the DB-owner migration flow.
-2. Add optional `GITHUB_TOKEN` in Vercel production environment.
+2. Add optional `GITHUB_TOKEN` to the local/operator environment when running
+   manual intake.
 3. Deploy the app code.
-4. Trigger:
-   `GET /api/cron/github-model-hub-sync?dryRun=true`
-5. Trigger without `dryRun` after reviewing the dry run response.
+4. Run:
+   `npm run model-hub:github-sync -- --query-limit=8 --per-page=30`
+5. Re-run with `--apply --yes-i-understand-this-writes-to-database` only after
+   reviewing the dry-run response.
 6. Open `/model-hub` and confirm items render.
 
 ## Verification Queries
@@ -75,8 +77,8 @@ limit 10;
 ## Backward Compatibility
 
 The page catches missing-table errors and shows an empty configuration state, so
-deploying the application before the SQL does not break the site. The sync cron
-will fail until the tables exist.
+deploying the application before the SQL does not break the site. The manual
+intake script will fail until the tables exist.
 
 ## Free Plan Notes
 

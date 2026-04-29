@@ -68,6 +68,13 @@ create table if not exists public.semantic_scholar_candidates (
   quality_reasons text[] not null default '{}',
   is_review_like boolean not null default false,
   eligible_for_promotion boolean not null default false,
+  pubmed_verification_status text not null default 'not_checked',
+  pubmed_verified_pmid text,
+  pubmed_verified_at timestamptz,
+  promotion_score numeric(6,4) not null default 0,
+  promotion_reasons text[] not null default '{}',
+  promotion_checked_at timestamptz,
+  promotion_dry_run_payload jsonb not null default '{}'::jsonb,
   source text not null default 'semantic_scholar_recommendations',
   status text not null default 'pending',
   raw_payload jsonb not null default '{}'::jsonb,
@@ -76,7 +83,9 @@ create table if not exists public.semantic_scholar_candidates (
   updated_at timestamptz not null default now(),
   constraint semantic_scholar_candidates_s2_paper_id_key unique (s2_paper_id),
   constraint semantic_scholar_candidates_status_check
-    check (status in ('pending', 'promoted', 'rejected', 'expired'))
+    check (status in ('pending', 'promoted', 'rejected', 'expired')),
+  constraint semantic_scholar_candidates_pubmed_verification_status_check
+    check (pubmed_verification_status in ('not_checked', 'verified', 'not_found', 'failed', 'skipped'))
 );
 
 create index if not exists semantic_scholar_candidates_status_expires_idx
@@ -92,11 +101,31 @@ create index if not exists semantic_scholar_candidates_promotion_idx
   on public.semantic_scholar_candidates
   (status, eligible_for_promotion, quality_score desc, expires_at);
 
+create index if not exists semantic_scholar_candidates_pubmed_verification_idx
+  on public.semantic_scholar_candidates
+  (pubmed_verification_status, promotion_score desc, promotion_checked_at desc);
+
 alter table public.semantic_scholar_candidates
   add column if not exists quality_score numeric(6,4) not null default 0,
   add column if not exists quality_reasons text[] not null default '{}',
   add column if not exists is_review_like boolean not null default false,
-  add column if not exists eligible_for_promotion boolean not null default false;
+  add column if not exists eligible_for_promotion boolean not null default false,
+  add column if not exists pubmed_verification_status text not null default 'not_checked',
+  add column if not exists pubmed_verified_pmid text,
+  add column if not exists pubmed_verified_at timestamptz,
+  add column if not exists promotion_score numeric(6,4) not null default 0,
+  add column if not exists promotion_reasons text[] not null default '{}',
+  add column if not exists promotion_checked_at timestamptz,
+  add column if not exists promotion_dry_run_payload jsonb not null default '{}'::jsonb;
+
+do $$
+begin
+  alter table public.semantic_scholar_candidates
+    add constraint semantic_scholar_candidates_pubmed_verification_status_check
+    check (pubmed_verification_status in ('not_checked', 'verified', 'not_found', 'failed', 'skipped'));
+exception
+  when duplicate_object then null;
+end $$;
 
 alter table public.semantic_scholar_paper_enrichments enable row level security;
 alter table public.semantic_scholar_candidates enable row level security;

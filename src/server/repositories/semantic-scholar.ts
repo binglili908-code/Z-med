@@ -2,12 +2,21 @@ import type { createServiceSupabaseClient } from "@/lib/supabase/service";
 
 type SupabaseDbClient = Pick<ReturnType<typeof createServiceSupabaseClient>, "from">;
 
+function chunkArray<T>(values: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let i = 0; i < values.length; i += size) {
+    chunks.push(values.slice(i, i + size));
+  }
+  return chunks;
+}
+
 export type PaperForSemanticScholarEnrichment = {
   id: string;
   pmid: string;
   doi: string | null;
   title: string;
   fetched_at?: string | null;
+  previous_s2_paper_id?: string | null;
 };
 
 export type SemanticScholarEnrichmentRow = {
@@ -96,6 +105,31 @@ export type SemanticScholarCandidateQualityUpdate = {
   updated_at: string;
 };
 
+export type SemanticScholarCandidatePromotionRow = {
+  s2_paper_id: string;
+  doi: string | null;
+  pmid: string | null;
+  title: string;
+  abstract: string | null;
+  quality_score: number | null;
+  quality_reasons: string[] | null;
+  is_review_like: boolean | null;
+  eligible_for_promotion: boolean | null;
+  status: "pending" | "promoted" | "rejected" | "expired";
+};
+
+export type SemanticScholarCandidatePromotionUpdate = {
+  s2_paper_id: string;
+  pubmed_verification_status: "verified" | "not_found" | "failed" | "skipped";
+  pubmed_verified_pmid: string | null;
+  pubmed_verified_at: string | null;
+  promotion_score: number;
+  promotion_reasons: string[];
+  promotion_checked_at: string;
+  promotion_dry_run_payload: Record<string, unknown>;
+  updated_at: string;
+};
+
 export async function listPapersForSemanticScholarEnrichment(
   client: SupabaseDbClient,
   params: { limit: number; staleBefore: string },
@@ -116,30 +150,40 @@ export async function listPapersForSemanticScholarEnrichment(
   );
   if (!paperRows.length) return [];
 
-  const { data: existing, error: existingError } = await client
-    .from("semantic_scholar_paper_enrichments")
-    .select("paper_id,last_enriched_at")
-    .in(
-      "paper_id",
-      paperRows.map((paper) => paper.id),
-    );
-  if (existingError) {
-    throw new Error(
-      `Failed to load Semantic Scholar enrichment state: ${existingError.message}. Apply sql/p10_semantic_scholar.sql first.`,
-    );
+  const existing: Array<{
+    paper_id: string;
+    last_enriched_at: string | null;
+    s2_paper_id: string | null;
+  }> = [];
+  for (const paperIdChunk of chunkArray(
+    paperRows.map((paper) => paper.id),
+    200,
+  )) {
+    const { data: chunk, error: existingError } = await client
+      .from("semantic_scholar_paper_enrichments")
+      .select("paper_id,last_enriched_at,s2_paper_id")
+      .in("paper_id", paperIdChunk);
+    if (existingError) {
+      throw new Error(
+        `Failed to load Semantic Scholar enrichment state: ${existingError.message}. Apply sql/p10_semantic_scholar.sql first.`,
+      );
+    }
+    existing.push(...((chunk ?? []) as typeof existing));
   }
 
-  const enrichedAtByPaperId = new Map(
-    ((existing ?? []) as Array<{ paper_id: string; last_enriched_at: string | null }>).map(
-      (row) => [row.paper_id, row.last_enriched_at],
-    ),
+  const enrichmentByPaperId = new Map(
+    existing.map((row) => [row.paper_id, row]),
   );
 
   return paperRows
     .filter((paper) => {
-      const enrichedAt = enrichedAtByPaperId.get(paper.id);
+      const enrichedAt = enrichmentByPaperId.get(paper.id)?.last_enriched_at;
       return !enrichedAt || enrichedAt < params.staleBefore;
     })
+    .map((paper) => ({
+      ...paper,
+      previous_s2_paper_id: enrichmentByPaperId.get(paper.id)?.s2_paper_id ?? null,
+    }))
     .slice(0, params.limit);
 }
 
@@ -208,6 +252,27 @@ export async function loadKnownSemanticScholarIds(
   ]);
 }
 
+export async function loadSemanticScholarEnrichmentPaperIdsByS2Ids(
+  client: SupabaseDbClient,
+  s2PaperIds: string[],
+) {
+  const values = Array.from(new Set(s2PaperIds.map((id) => id.trim()).filter(Boolean)));
+  const out = new Map<string, string>();
+  for (const s2IdChunk of chunkArray(values, 200)) {
+    const { data, error } = await client
+      .from("semantic_scholar_paper_enrichments")
+      .select("paper_id,s2_paper_id")
+      .in("s2_paper_id", s2IdChunk);
+    if (error) {
+      throw new Error(`Failed to load Semantic Scholar enrichment S2 ids: ${error.message}`);
+    }
+    for (const row of (data ?? []) as Array<{ paper_id: string; s2_paper_id: string | null }>) {
+      if (row.s2_paper_id) out.set(row.s2_paper_id, row.paper_id);
+    }
+  }
+  return out;
+}
+
 export async function loadKnownPaperDois(client: SupabaseDbClient, dois: string[]) {
   const values = Array.from(new Set(dois.map((doi) => doi.trim()).filter(Boolean)));
   if (!values.length) return new Set<string>();
@@ -269,6 +334,51 @@ export async function updateSemanticScholarCandidateQualityRows(
       .eq("s2_paper_id", s2_paper_id);
     if (error) {
       throw new Error(`Failed to update Semantic Scholar candidate quality: ${error.message}`);
+    }
+    updatedCount += 1;
+  }
+  return { updatedCount };
+}
+
+export async function listSemanticScholarCandidatesForPromotionDryRun(
+  client: SupabaseDbClient,
+  params: { limit: number; includeRejected?: boolean },
+) {
+  let query = client
+    .from("semantic_scholar_candidates")
+    .select(
+      "s2_paper_id,doi,pmid,title,abstract,quality_score,quality_reasons,is_review_like,eligible_for_promotion,status",
+    )
+    .gte("expires_at", new Date().toISOString())
+    .order("eligible_for_promotion", { ascending: false })
+    .order("quality_score", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(params.limit);
+
+  query = params.includeRejected
+    ? query.in("status", ["pending", "rejected"])
+    : query.eq("status", "pending").eq("eligible_for_promotion", true);
+
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(`Failed to load Semantic Scholar promotion candidates: ${error.message}`);
+  }
+  return (data ?? []) as SemanticScholarCandidatePromotionRow[];
+}
+
+export async function updateSemanticScholarCandidatePromotionRows(
+  client: SupabaseDbClient,
+  rows: SemanticScholarCandidatePromotionUpdate[],
+) {
+  let updatedCount = 0;
+  for (const row of rows) {
+    const { s2_paper_id, ...patch } = row;
+    const { error } = await client
+      .from("semantic_scholar_candidates")
+      .update(patch)
+      .eq("s2_paper_id", s2_paper_id);
+    if (error) {
+      throw new Error(`Failed to update Semantic Scholar promotion diagnostics: ${error.message}`);
     }
     updatedCount += 1;
   }
