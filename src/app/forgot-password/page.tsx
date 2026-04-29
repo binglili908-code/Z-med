@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
+import { TurnstileWidget } from "@/components/auth/turnstile-widget";
 import {
   Card,
   CardContent,
@@ -33,14 +34,32 @@ function ForgotPasswordContent() {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = React.useState<string | null>(null);
+  const [captchaResetSignal, setCaptchaResetSignal] = React.useState(0);
 
   const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
+  const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
+  const captchaEnabled = Boolean(turnstileSiteKey);
+
+  const resetCaptcha = React.useCallback(() => {
+    if (!captchaEnabled) {
+      return;
+    }
+
+    setCaptchaToken(null);
+    setCaptchaResetSignal((value) => value + 1);
+  }, [captchaEnabled]);
 
   const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
     if (!supabase) {
       setError("缺少 Supabase 环境变量配置。");
+      return;
+    }
+
+    if (captchaEnabled && !captchaToken) {
+      setError("请先完成人机验证。");
       return;
     }
 
@@ -58,12 +77,14 @@ function ForgotPasswordContent() {
       emailValue,
       {
         redirectTo: resetRedirectTo,
+        ...(captchaToken ? { captchaToken } : {}),
       },
     );
 
     if (resetError) {
       setError(formatSupabaseAuthError(resetError.message));
       setLoading(false);
+      resetCaptcha();
       return;
     }
 
@@ -112,6 +133,22 @@ function ForgotPasswordContent() {
               />
             </div>
 
+            {captchaEnabled ? (
+              <TurnstileWidget
+                siteKey={turnstileSiteKey}
+                resetSignal={captchaResetSignal}
+                onVerify={(token) => {
+                  setCaptchaToken(token);
+                  setError(null);
+                }}
+                onExpire={() => setCaptchaToken(null)}
+                onError={() => {
+                  setCaptchaToken(null);
+                  setError("人机验证加载失败，请刷新后重试。");
+                }}
+              />
+            ) : null}
+
             {error ? (
               <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                 {error}
@@ -122,7 +159,7 @@ function ForgotPasswordContent() {
               type="submit"
               variant="primary"
               className="w-full"
-              disabled={loading || !supabase}
+              disabled={loading || !supabase || (captchaEnabled && !captchaToken)}
             >
               {loading ? "发送中..." : "发送重置邮件"}
             </Button>

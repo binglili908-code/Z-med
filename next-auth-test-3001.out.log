@@ -1,0 +1,33 @@
+
+> zlab-web@0.1.0 dev
+> next dev --port 3001
+
+   ▲ Next.js 15.5.15
+   - Local:        http://localhost:3001
+   - Network:      http://26.157.233.54:3001
+   - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 6.1s
+ ○ Compiling /signup ...
+ ✓ Compiled /signup in 1382ms (791 modules)
+ GET /signup 200 in 1869ms
+ ○ Compiling /signin ...
+ ✓ Compiled /signin in 2.1s (813 modules)
+ GET /signin 200 in 2433ms
+ ✓ Compiled /forgot-password in 278ms (820 modules)
+ GET /forgot-password 200 in 427ms
+ ✓ Compiled /auth/callback in 297ms (814 modules)
+ GET /auth/callback?mode=confirmed 200 in 491ms
+   Reload env: .env.local
+ ✓ Compiled in 134ms (314 modules)
+ ✓ Compiled /signup in 275ms (483 modules)
+ GET /signup 200 in 653ms
+ ✓ Compiled in 257ms (328 modules)
+ ✓ Compiled in 284ms (328 modules)
+ ✓ Compiled in 327ms (329 modules)
+ ✓ Compiled /signup in 417ms (484 modules)
+ ○ Compiling /_error ...
+ ✓ Compiled /_error in 1904ms (1159 modules)
+ GET /signup 500 in 5555ms
+[?25h

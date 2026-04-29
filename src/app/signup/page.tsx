@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
+import { TurnstileWidget } from "@/components/auth/turnstile-widget";
 import {
   Card,
   CardContent,
@@ -35,8 +36,21 @@ function SignUpContent() {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = React.useState<string | null>(null);
+  const [captchaResetSignal, setCaptchaResetSignal] = React.useState(0);
 
   const supabase = React.useMemo(() => getBrowserSupabaseClient(), []);
+  const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
+  const captchaEnabled = Boolean(turnstileSiteKey);
+
+  const resetCaptcha = React.useCallback(() => {
+    if (!captchaEnabled) {
+      return;
+    }
+
+    setCaptchaToken(null);
+    setCaptchaResetSignal((value) => value + 1);
+  }, [captchaEnabled]);
 
   React.useEffect(() => {
     async function checkSession() {
@@ -74,6 +88,11 @@ function SignUpContent() {
       return;
     }
 
+    if (captchaEnabled && !captchaToken) {
+      setError("请先完成人机验证。");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setMessage(null);
@@ -89,12 +108,14 @@ function SignUpContent() {
       password,
       options: {
         emailRedirectTo,
+        ...(captchaToken ? { captchaToken } : {}),
       },
     });
 
     if (signUpError) {
       setError(formatSupabaseAuthError(signUpError.message));
       setLoading(false);
+      resetCaptcha();
       return;
     }
 
@@ -185,6 +206,22 @@ function SignUpContent() {
               />
             </div>
 
+            {captchaEnabled ? (
+              <TurnstileWidget
+                siteKey={turnstileSiteKey}
+                resetSignal={captchaResetSignal}
+                onVerify={(token) => {
+                  setCaptchaToken(token);
+                  setError(null);
+                }}
+                onExpire={() => setCaptchaToken(null)}
+                onError={() => {
+                  setCaptchaToken(null);
+                  setError("人机验证加载失败，请刷新后重试。");
+                }}
+              />
+            ) : null}
+
             {error ? (
               <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                 {error}
@@ -195,7 +232,7 @@ function SignUpContent() {
               type="submit"
               variant="primary"
               className="w-full"
-              disabled={loading || !supabase}
+              disabled={loading || !supabase || (captchaEnabled && !captchaToken)}
             >
               {loading ? "注册中..." : "创建账号"}
             </Button>
