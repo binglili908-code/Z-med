@@ -18,3 +18,16 @@
  ✓ Compiled in 263ms (299 modules)
  ✓ Compiled in 192ms (299 modules)
  ✓ Compiled in 160ms (299 modules)
+ ✓ Compiled in 383ms (285 modules)
+ ✓ Compiled in 250ms (299 modules)
+ ✓ Compiled in 711ms (299 modules)
+ ○ Compiling /model-hub ...
+ ✓ Compiled /model-hub in 1653ms (908 modules)
+ GET /model-hub 200 in 4583ms
+ ✓ Compiled in 349ms (908 modules)
+ GET /model-hub 200 in 1763ms
+ ○ Compiling /_error ...
+ ✓ Compiled /_error in 1364ms (1254 modules)
+ GET /model-hub 500 in 3959ms
+ GET /model-hub 200 in 1999ms
+[?25h
