@@ -155,3 +155,32 @@ test("retries highspeed model failures with the supported MiniMax fallback model
     model: "MiniMax-M2.7",
   });
 });
+
+test("strips reasoning blocks and reasoning content parts from MiniMax responses", async () => {
+  let requestCount = 0;
+
+  server.use(
+    http.post("https://api.minimaxi.com/v1/chat/completions", () => {
+      requestCount += 1;
+      return HttpResponse.json({
+        choices: [
+          {
+            message: {
+              content: [
+                { type: "reasoning_content", text: "internal chain of thought" },
+                { type: "text", text: "<think>hidden</think>visible translation" },
+              ],
+            },
+          },
+        ],
+      });
+    }),
+  );
+
+  const response = await callMiniMaxChat({
+    userPrompt: "translate this",
+  });
+
+  assert.equal(requestCount, 1);
+  assert.equal(response.content, "visible translation");
+});

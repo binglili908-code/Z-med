@@ -1,18 +1,12 @@
 import { parseJsonObjectFromModelOutput } from "@/lib/model-json";
+import { stripReasoningBlocks } from "@/lib/model-output-cleaning";
 
 type TranslationPayload = {
   title_zh?: unknown;
   abstract_zh?: unknown;
 };
 
-function stripReasoningBlocks(text: string) {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/<think>[\s\S]*/gi, "")
-    .trim();
-}
-
-function cleanTranslatedField(value: unknown) {
+export function cleanTranslatedText(value: unknown) {
   if (typeof value !== "string") return null;
   const cleaned = stripReasoningBlocks(value)
     .replace(/^```[a-zA-Z]*\s*/, "")
@@ -27,7 +21,7 @@ export function parseTranslationResult(content: string) {
     "MiniMax translation response",
   );
   return {
-    titleZh: cleanTranslatedField(parsed.title_zh),
-    abstractZh: cleanTranslatedField(parsed.abstract_zh),
+    titleZh: cleanTranslatedText(parsed.title_zh),
+    abstractZh: cleanTranslatedText(parsed.abstract_zh),
   };
 }

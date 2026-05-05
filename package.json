@@ -11,6 +11,7 @@
     "env:check": "tsx src/scripts/check-env.ts",
     "literature:review": "tsx src/scripts/weekly-literature-review.ts",
     "literature:refresh": "tsx src/scripts/weekly-literature-review.ts --refresh --discovery",
+    "papers:clean-translations": "tsx src/scripts/clean-paper-translations.ts",
     "db:types": "tsx src/scripts/generate-supabase-types.ts",
     "db:export-contracts": "node src/scripts/export-db-contracts.mjs",
     "model-hub:curation": "tsx src/scripts/upsert-confirmed-model-hub-curation.ts",

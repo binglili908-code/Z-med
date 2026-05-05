@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseTranslationResult } from "../src/lib/paper-translation-result";
+import { cleanTranslatedText, parseTranslationResult } from "../src/lib/paper-translation-result";
 
 test("parses translation JSON from noisy model output", () => {
   const parsed = parseTranslationResult(`
@@ -30,5 +30,19 @@ test("rejects non-JSON translation output instead of exposing raw model text", (
   assert.throws(
     () => parseTranslationResult("<think>analysis</think>中文摘要"),
     /MiniMax translation response was not valid JSON/,
+  );
+});
+
+test("cleans plain translated text before it is saved", () => {
+  assert.equal(
+    cleanTranslatedText("[thinking]hidden reasoning[/thinking]\nfinal translated abstract"),
+    "final translated abstract",
+  );
+});
+
+test("cleans leading reasoning prose when a translation marker is present", () => {
+  assert.equal(
+    cleanTranslatedText("思考过程：先判断术语。\n最终译文：这是中文摘要。"),
+    "这是中文摘要。",
   );
 });

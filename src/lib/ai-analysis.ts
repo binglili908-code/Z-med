@@ -1,5 +1,6 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { callMiniMaxChat, getMiniMaxApiKey, getMiniMaxModel } from "@/lib/minimax";
+import { cleanTranslatedText } from "@/lib/paper-translation-result";
 import {
   enqueueMissingPlatformAnalysisJobs,
   getAiAnalysisPapersByIds,
@@ -35,11 +36,11 @@ async function callMiniMaxAnalysis(paper: AiAnalysisPaperRow) {
     temperature: 0.1,
     maxTokens: 2400,
   });
-  const content = response.content;
+  const content = cleanTranslatedText(response.content);
   if (!content) {
     throw new Error("MiniMax response has no content");
   }
-  return content.trim();
+  return content;
 }
 
 async function callMiniMaxTitle(title: string, journal: string | null) {
@@ -54,11 +55,11 @@ async function callMiniMaxTitle(title: string, journal: string | null) {
     temperature: 0.1,
     maxTokens: 200,
   });
-  const content = res.content?.trim() ?? "";
+  const content = cleanTranslatedText(res.content);
   if (!content) {
     throw new Error("MiniMax title response has no content");
   }
-  return content.trim();
+  return content;
 }
 
 export async function runAiAnalysisCronJob() {

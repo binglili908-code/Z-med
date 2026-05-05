@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { fetchWithTimeout } from "@/lib/external-fetch";
+import { extractVisibleModelText } from "@/lib/model-output-cleaning";
 
 export interface MiniMaxChatRequest {
   systemPrompt?: string;
@@ -98,21 +99,6 @@ function normalizeMiniMaxTemperature(value: number | undefined) {
   if (value == null) return 1;
   if (!Number.isFinite(value)) return 1;
   return Math.min(1, Math.max(0.1, value));
-}
-
-function extractMiniMaxContent(value: unknown) {
-  if (typeof value === "string") return value.trim();
-  if (!Array.isArray(value)) return "";
-
-  return value
-    .map((part) => {
-      if (typeof part === "string") return part;
-      if (typeof part?.text === "string") return part.text;
-      if (typeof part?.content === "string") return part.content;
-      return "";
-    })
-    .join("")
-    .trim();
 }
 
 function logMiniMaxDiagnostic(
@@ -228,7 +214,7 @@ async function callMiniMaxChatWithModel(
     throw new Error(`MiniMax request failed: ${msg}`);
   }
 
-  const content = extractMiniMaxContent(payload?.choices?.[0]?.message?.content);
+  const content = extractVisibleModelText(payload?.choices?.[0]?.message?.content);
   if (!content && options.reasoningSplit && !options.retriedWithoutReasoningSplit) {
     logMiniMaxDiagnostic("empty_content_retry_without_reasoning_split", {
       label: req.label ?? null,
