@@ -7,6 +7,7 @@ import type { MedicalQueryPlan } from "@/lib/medical-query-plan";
 import { parseJsonObjectFromModelOutput } from "@/lib/model-json";
 import { assistPubmedKeywords } from "@/lib/pubmed-query-assist";
 import {
+  expandJournalTerms,
   expandSubscriptionTerms,
   normalizeMatchText,
 } from "@/lib/subscription-matching";
@@ -62,7 +63,7 @@ function localFallback(args: {
 }): NormalizedSubscriptionPreferences {
   return {
     keywords: expandSubscriptionTerms(args.keywords),
-    journals: expandSubscriptionTerms(args.customJournals),
+    journals: expandJournalTerms(args.customJournals),
     normalizedTerms: {
       source: "local_fallback",
       raw_keywords: args.keywords,
@@ -258,7 +259,7 @@ export async function normalizeSubscriptionPreferences(args: {
 
     return {
       keywords: expandSubscriptionTerms(assistedKeywords),
-      journals: expandSubscriptionTerms(journals),
+      journals: expandJournalTerms(journals),
       normalizedTerms,
       model: response.model,
       error: null,

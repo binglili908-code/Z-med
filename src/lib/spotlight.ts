@@ -1,6 +1,7 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
   buildSearchText,
+  expandJournalTerms,
   expandSubscriptionTerms,
   journalMatchesAnyTerm,
   textMatchesAnyTerm,
@@ -193,7 +194,7 @@ export async function buildSpotlightPapers(params: {
     const subscriptionStatus = await getProfileSubscriptionStatus(service, userId);
     if (subscriptionStatus.subscriptionEnabled) {
       keywords.push(...expandSubscriptionTerms(subscriptionStatus.matchingKeywords));
-      journalTerms = expandSubscriptionTerms(subscriptionStatus.matchingJournals);
+      journalTerms = expandJournalTerms(subscriptionStatus.matchingJournals);
       hasProfileConfig = subscriptionStatus.hasSubscriptionConfig;
     }
   }

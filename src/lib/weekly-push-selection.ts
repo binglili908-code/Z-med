@@ -1,5 +1,6 @@
 import {
   buildSearchText,
+  expandJournalTerms,
   expandSubscriptionTerms,
   hasBroadTopicTerm,
   journalMatchesAnyTerm,
@@ -149,7 +150,7 @@ export function buildWeeklyPushProfileTerms(profile: WeeklyPushProfileRow) {
 
   return {
     keywords: expandSubscriptionTerms(rawKeywords),
-    journals: expandSubscriptionTerms(rawJournals),
+    journals: expandJournalTerms(rawJournals),
   };
 }
 

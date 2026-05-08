@@ -1,5 +1,6 @@
 import {
   buildSearchText,
+  expandJournalTerms,
   expandSubscriptionTerms,
   hasBroadTopicTerm,
   journalMatchesAnyTerm,
@@ -39,7 +40,7 @@ const TOPIC_FALLBACK_REASON =
 export function buildFeedProfileTerms(status: ProfileSubscriptionStatus): FeedProfileTerms {
   return {
     keywords: expandSubscriptionTerms(status.matchingKeywords),
-    journals: expandSubscriptionTerms(status.matchingJournals),
+    journals: expandJournalTerms(status.matchingJournals),
   };
 }
 

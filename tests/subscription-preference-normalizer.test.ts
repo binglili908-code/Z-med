@@ -133,6 +133,35 @@ test("does not call medical query planner while feature flag is disabled", async
   assert.ok(result.keywords.includes("lung cancer"));
 });
 
+test("local fallback expands Chinese specialty preferences without MiniMax", async () => {
+  const mutableEnv = process.env as Record<string, string | undefined>;
+  const originalNodeEnv = mutableEnv.NODE_ENV;
+  delete process.env.MINIMAX_API_KEY;
+  mutableEnv.NODE_ENV = "production";
+
+  try {
+    const result = await normalizeSubscriptionPreferences({
+      keywords: [
+        "\u6d88\u5316\u5185\u79d1",
+        "\u653e\u5c04\u5f71\u50cf",
+        "\u5168\u79d1\u533b\u5b66/\u521d\u7ea7\u4fdd\u5065",
+      ],
+      customJournals: [],
+    });
+
+    assert.equal(result.model, "local_fallback");
+    assert.ok(result.keywords.includes("gastroenterology"));
+    assert.ok(result.keywords.includes("medical imaging"));
+    assert.ok(result.keywords.includes("primary care"));
+  } finally {
+    if (originalNodeEnv == null) {
+      delete mutableEnv.NODE_ENV;
+    } else {
+      mutableEnv.NODE_ENV = originalNodeEnv;
+    }
+  }
+});
+
 test("stores medical query plan metadata without changing normalized keywords", async () => {
   process.env.MEDICAL_QUERY_PLANNER_ENABLED = "true";
   mockPreferenceMiniMax({

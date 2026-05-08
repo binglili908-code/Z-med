@@ -2,6 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import { filterReviewLikePapers } from "@/lib/paper-article-type";
 import {
   buildSearchText,
+  expandJournalTerms,
   expandSubscriptionTerms,
   journalMatchesAnyTerm,
   textMatchesAnyTerm,
@@ -76,7 +77,7 @@ export async function generateRecommendations(
       ? profile.subscription_normalized_keywords
       : profile?.subscription_keywords,
   );
-  const customJournals = expandSubscriptionTerms(
+  const customJournals = expandJournalTerms(
     profile?.subscription_normalized_journals?.length
       ? profile.subscription_normalized_journals
       : profile?.custom_journals,

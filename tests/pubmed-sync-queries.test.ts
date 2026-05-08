@@ -5,6 +5,7 @@ import {
   buildPlannerKeywordPubmedQueries,
   buildQueryFromKeywords,
   buildUserPreferenceJournalQueries,
+  expandKeywordSeedsForSync,
   toKeywordSyncSeedList,
   toJournalList,
   toKeywordList,
@@ -69,6 +70,39 @@ test("Chinese user interests use their normalized English PubMed terms", () => {
   ]);
 });
 
+test("raw Chinese specialties expand into PubMed-searchable keyword terms", () => {
+  const keywords = toKeywordList([
+    {
+      subscription_keywords: [
+        "\u6d88\u5316\u5185\u79d1",
+        "\u53e3\u8154\u533b\u5b66",
+        "\u653e\u5c04\u5f71\u50cf",
+        "\u5168\u79d1\u533b\u5b66/\u521d\u7ea7\u4fdd\u5065",
+      ],
+      subscription_mesh_terms: [],
+    },
+  ]);
+
+  assert.ok(keywords.includes("gastroenterology"));
+  assert.ok(keywords.includes("digestive system disease"));
+  assert.ok(keywords.includes("oral medicine"));
+  assert.ok(keywords.includes("dentistry"));
+  assert.ok(keywords.includes("radiology"));
+  assert.ok(keywords.includes("diagnostic imaging"));
+  assert.ok(keywords.includes("family medicine"));
+  assert.ok(keywords.includes("primary care"));
+  assert.equal(keywords.includes("\u6d88\u5316\u5185\u79d1"), false);
+});
+
+test("keyword sync seeds keep raw Chinese specialty and add local English aliases", () => {
+  const seeds = expandKeywordSeedsForSync(["\u91cd\u75c7\u533b\u5b66"]);
+
+  assert.equal(seeds[0], "\u91cd\u75c7\u533b\u5b66");
+  assert.ok(seeds.includes("critical care"));
+  assert.ok(seeds.includes("intensive care unit"));
+  assert.ok(seeds.includes("icu"));
+});
+
 test("profile journal list includes normalized full journal names and useful acronyms", () => {
   const journals = toJournalList([
     {
@@ -109,7 +143,7 @@ test("broad keyword query uses title/abstract plus MeSH clauses", () => {
   assert.ok(query.includes('"artificial intelligence"[Title/Abstract]'));
 });
 
-test("keyword sync seeds keep raw Chinese keywords for the dynamic planner", () => {
+test("keyword sync seeds keep raw Chinese specialty and add local aliases", () => {
   const keywords = toKeywordSyncSeedList([
     {
       subscription_keywords: ["眼科"],
@@ -117,7 +151,9 @@ test("keyword sync seeds keep raw Chinese keywords for the dynamic planner", () 
     },
   ]);
 
-  assert.deepEqual(keywords, ["眼科"]);
+  assert.equal(keywords[0], "眼科");
+  assert.ok(keywords.includes("ophthalmology"));
+  assert.ok(keywords.includes("eye disease"));
 });
 
 test("keyword sync seeds prefer normalized PubMed terms when available", () => {

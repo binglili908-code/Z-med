@@ -5,6 +5,10 @@ import {
   normalizeToken,
 } from "@/lib/pubmed-sync-rules";
 import type { MedicalQueryPlan } from "@/lib/medical-query-plan";
+import {
+  expandJournalTerms,
+  expandSubscriptionTerms,
+} from "@/lib/subscription-matching";
 
 type ProfileKeywordRow = {
   subscription_keywords?: string[] | null;
@@ -72,6 +76,26 @@ function preferredTerms(
   return Array.isArray(row[rawKey]) ? (row[rawKey] as string[]) : [];
 }
 
+export function expandKeywordSeedsForSync(values: string[] | null | undefined) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of values ?? []) {
+    const rawValue = normalizeKeywordSeed(raw);
+    if (rawValue && !seen.has(rawValue)) {
+      seen.add(rawValue);
+      out.push(rawValue);
+    }
+
+    for (const keyword of toPubmedSearchTerms(expandSubscriptionTerms([raw]), 20)) {
+      const value = normalizeKeywordSeed(keyword);
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+}
+
 export function toKeywordList(rows: ProfileKeywordRow[]) {
   const set = new Set<string>();
   for (const row of rows) {
@@ -80,7 +104,7 @@ export function toKeywordList(rows: ProfileKeywordRow[]) {
       "subscription_normalized_keywords",
       "subscription_keywords",
     );
-    for (const k of toPubmedSearchTerms(keywords, 80)) {
+    for (const k of toPubmedSearchTerms(expandSubscriptionTerms(keywords), 120)) {
       const v = normalizeToken(k);
       if (v) set.add(v);
     }
@@ -106,12 +130,15 @@ export function toKeywordSyncSeedList(rows: ProfileKeywordRow[]) {
       : [];
 
     if (normalizedKeywords.length) {
-      for (const keyword of toPubmedSearchTerms(normalizedKeywords, 80)) {
+      for (const keyword of toPubmedSearchTerms(
+        expandSubscriptionTerms(normalizedKeywords),
+        120,
+      )) {
         const value = normalizeKeywordSeed(keyword);
         if (value) set.add(value);
       }
     } else {
-      for (const keyword of row.subscription_keywords ?? []) {
+      for (const keyword of expandKeywordSeedsForSync(row.subscription_keywords)) {
         const value = normalizeKeywordSeed(keyword);
         if (value) set.add(value);
       }
@@ -134,7 +161,7 @@ export function toJournalList(rows: ProfileKeywordRow[]) {
       "subscription_normalized_journals",
       "custom_journals",
     );
-    for (const journal of toPubmedSearchTerms(journals, 80)) {
+    for (const journal of toPubmedSearchTerms(expandJournalTerms(journals), 120)) {
       const v = normalizeToken(journal);
       if (v) set.add(v);
     }
@@ -168,7 +195,7 @@ function journalClause(terms: string[]) {
 
 export function buildQueryFromKeywords(keywords: string[]) {
   const aiTerms = dedupeTerms(AI_TERMS);
-  const medTerms = toPubmedSearchTerms(dedupeTerms([...MED_TERMS, ...keywords]), 25);
+  const medTerms = toPubmedSearchTerms(dedupeTerms([...MED_TERMS, ...keywords]), 80);
   const aiJoined = aiTerms
     .map((k) => `${quotePubmedTerm(k)}[Title/Abstract]`)
     .join(" OR ");

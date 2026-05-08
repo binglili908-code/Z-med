@@ -37,6 +37,7 @@ import {
   buildRecentJournalQuery,
   buildTopJournalBackfillQuery,
   buildTopJournalQuery,
+  expandKeywordSeedsForSync,
   formatPubmedDate,
   monthRangeByOffset,
   toJournalList,
@@ -403,7 +404,7 @@ export async function runKeywordSyncJob(options: KeywordSyncJobOptions = {}) {
 
   const allKeywords = new Set<string>();
   if (options.keywords?.length) {
-    for (const keyword of options.keywords) {
+    for (const keyword of expandKeywordSeedsForSync(options.keywords)) {
       const value = cleanKeywordSyncSeed(keyword);
       if (value) allKeywords.add(value);
     }
